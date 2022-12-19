@@ -1,10 +1,10 @@
 # Public-Hubitat-Code
 
-This is my first attempt at driver code.  I am only one month into any form of home automation.  So I have lots to learn and I am happy to have comments & suggestions in respect of this trial code.
+This is my first attempt at driver code.  I am only one month into any form of home automation.  So I have lots to learn and I am happy to have comments & suggestions in respect of this trial driver code.
 
 I bought a hubitat C7 and a POPP zigbee radiator TRV (model 701721).  They are compatibile but I could not find an appropriate driver so I decided to write one.
 
-It turns out that this TRV is a badged danfos TRV (Danfos Ally
+It turns out that this TRV is a badged danfos TRV (Danfos Ally) for which there is a good published specification:
 
 The following have proved key to the development of my (still limited) understanding:
   
@@ -15,11 +15,11 @@ The following have proved key to the development of my (still limited) understan
 A magic list of manufacture codes that are the key to making manufacturer specific attributes available for read / write. Created and kept on github by Chris Brandson -
  https://github.com/wireshark/wireshark/blob/cbbddcfa3a046157a26541a57bac7eb631148b5e/epan/dissectors/packet-zbee.h.  Thanks to Krassimir Kossev and Mike Maxwell for their tips in relation to this.  
  
-The 2mqtt page relating to this product - I did not want to go down the 2mqtt route but this has useful descriptions of some of the TRV functions, https://www.zigbee2mqtt.io/devices/701721.html.
+The 2mqtt page relating to this product, https://www.zigbee2mqtt.io/devices/701721.html. I did not want to go down the 2mqtt route but this has useful descriptions of some of the TRV functions that are more fully documented in the Danfos Zigbee Cluster Spec.
 
 Endless example drivers for other products, the (good but less than complete) hubitat documentation, lots of hubitat (and other devices) community chats.  
 
-Special mention to ckpt-martin for his zigbee driver for the eCozy TRV. https://github.com/ckpt-martin/Hubitat/blob/fae5a4a455a209878c467fd6f91c70a7a9b223ca/README.md
+Special mention and thanks to ckpt-martin for his zigbee driver for the eCozy TRV. https://github.com/ckpt-martin/Hubitat/blob/fae5a4a455a209878c467fd6f91c70a7a9b223ca/README.md
 
 So, how far have I got?  
 
@@ -29,16 +29,38 @@ This is still in development - so I have called it a 'trial driver' with 'versio
 
 A few notes:
 
-1.  I have not implemented this as a 'Thermostat' Device.  I could not stand having all the HVAC controls and attributes messing up my screen when essentially all a TRV can do is heat.  So I have selected the relevant capabilities from the Hubitat Capabilities List - https://docs2.hubitat.com/developer/driver/capability-list.
-The only downside so far is that when writing associated Hubitat apps, in Rule Machine, TRV will not appear in a list of Thermostats - but you can get to all the available attributes and commands for the TRV by treating it as a temperature sensor and setting custom attributes.
+1.  I have not implemented this as a 'Thermostat' device driver.  I could not stand having all the HVAC controls and attributes messing up my screen when essentially all a TRV can do is heating.  So I have selected relevant capabilities from the Hubitat Capabilities List - https://docs2.hubitat.com/developer/driver/capability-list.
+The only downside so far is that when writing associated Hubitat apps, in Rule Machine, TRV will not appear in a list of Thermostats - but you can get to all the available attributes and commands for the TRV by treating it as a temperature sensor and by setting custom attributes.
 
-2.  As just stated, I have defined a number of custom attributes.  These are needed to work with the manufacturer specific functionality that this TRV has.  For example, the TRV has an 'orientation' setting, which makes a different to the accuracy of its local temperature mesurement; so I have a custom attribute called eTRVOrientation.  The attribute names are pretty self-explanitory but See further in the driver's Metadata for the list of attributes and implemented values.
+2.  As just stated, I have defined a number of custom attributes.  These are needed to work with the manufacturer specific functionality that this TRV has.  For example, the TRV has an 'orientation' setting, which makes a different to the accuracy of its local temperature mesurement; so I have a custom attribute called eTRVOrientation.  The attribute names are pretty self-explanitory but, see below and in the driver's Metadata for the list of attributes and implemented values.
+
+The standard attributes (listed under Current States on the driver page once the driver is configured) are:
+
+heatingSetpoint   - (obviously) the heating setpoint that the TRV will aim at - only celsius throughout this driver with permitted range 5 to 30 
+                  - a command is implement for setting through the driver page or a hubitat app
+temperature       - the local temperature in celsius generated by the TRV's own sensor - read only
+battery           - read only the remaining TRV's battery percentage
+
+The custom attributes (also listed under Current States) are - at the moment: 
+
+eTRVCallingForHeat : yes or no - read only - one day will be useful to fire up my boiler only when needed
+eTRVExternalSensorTemperature : e.g. 19.2 - command is implement for setting through the driver page or a hubitat app  - celsius
+eTRVOrientation : horizontal or vertical - toggles on the driver page
+eTRVPIHeatingDemand : 0 to 100 - read only - the percentage that the TRV valve is openned by the TRV itself
+eTRVRadiatorCovered : notCovered or covered - toggles on the driver page
+eTRVViewingDirection : 'normal' or 'inverted' - toggles on the driver page  turns the digits over in the TRV display 
 
 3.  The driver allows for the use of an external temperature sensor - but you will need to use Hubitat apps to provide regular remote temperature readings to the TRV. The max and minimum frequency Danfos suggest for sending this data depend on whether, in the driver, you set the TRV as 'covered' or 'notCovered' (custom attribute eTRVCovered.  The note in the Danfos specification on this says: (a) if TRV is set as not covered - External sensor temperature should be sent to it from hub at least every 3 hours but not more often than every 30 minutes @ every 0,1K change (and that after 3 hours the function is disabled and goes back to standard mode - operating based on the TRV's local temperature readings); (b) If if TRV is set as covered - External sensor temperature should be sent to it from hub at least every 30 minutes but not more often than every 5minutes @ every 0,1K change, and after 35 minutes the function is disabled and goes back to standard mode (attribute value -80)
 
 4.  Events are generated by the driver only in the parse() method. i.e. on reading an attribute from the TRV.  So a zigbee write command is always coupled with a following read comand. This ensures that an Event is only generated when there is confirmation, through the parse() method, that the write command was effective.  It can take a few moments for this to occur.  Be patient.
 
-5.  The TRV is configured (in the config() method, to regularly report on key attributes, but not ones, like orientation, which are unlikely ever to change once the TRV is set up.
+5.  After installing the driver do press configure on the driver page.  The TRV will then be configured, via the config() method, to regularly report on key attributes, but not ones, like orientation and covered, which are unlikely ever to change once the TRV is set up.
 
-7.  
+6.  Yet to be implemented are things like - setting a weekly schedule (why would you when Hubitiat does that for you) - open windo detection - 'child' locking the TRV
 
+I hope this is enough of an explanation.
+
+Good luck...
+Jon
+
+p.s. - good tip I found in the community chats somewhere if you have been using another driver for the device already is to select and load 'Device' as a driver, use the device page to clear Current States and State Variables (requires the page to be refreshed after pressing the buttons) and then loading the device driver you want to use.
