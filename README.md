@@ -1,6 +1,7 @@
 # Public-Hubitat-Code
 
 v1.0 (18 December 2022)
+
 v1.1 (21 December 2022)
 
 This is my first attempt at driver code.  I am only one month into any form of home automation.  So I have lots to learn and I am happy to have comments & suggestions in respect of this trial driver code.
