@@ -1,6 +1,6 @@
 # Public-Hubitat-Code
 
-v1.0 (18 December 2022)
+v1.0 (19 December 2022)
 
 v1.1 (21 December 2022)
 
