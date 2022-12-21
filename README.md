@@ -72,3 +72,7 @@ Good luck...
 Jon
 
 p.s. - good tip I found in the community chats somewhere if you have been using another driver for the device already is to select and load 'Device' as a driver, use the device page to clear Current States and State Variables (requires the page to be refreshed after pressing the buttons) and then loading the device driver you want to use.
+
+
+v1.1 (21 December 2022)
+Implements user defined min and max heating setpoints between the manufacturer fixed values of 5 and 35; see attributes eTRVMinHeatSetpointLimit and eTRVMaxHeatSetpointLimit. Attempts to set a heatingSetpoint value outside these limits is ignored by the driver.
