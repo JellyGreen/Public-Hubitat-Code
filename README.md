@@ -79,4 +79,4 @@ p.s. - good tip I found in the community chats somewhere if you have been using 
 
 
 v1.1 (21 December 2022)
-Implements user defined min and max heating setpoints between the manufacturer fixed values of 5 and 35; see attributes eTRVMinHeatSetpointLimit and eTRVMaxHeatSetpointLimit. Attempts to set a heatingSetpoint value outside these limits is ignored by the driver.
+Implements user defined min and max heating setpoints between the manufacturer fixed values of 5 and 35; see attributes eTRVMinHeatSetpointLimit and eTRVMaxHeatSetpointLimit. Anttempt to set a heatingSetpoint value outside these limits is ignored by the driver.
