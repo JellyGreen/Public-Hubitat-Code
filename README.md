@@ -4,6 +4,8 @@ v1.0 (19 December 2022)
 
 v1.1 (21 December 2022)
 
+v1.2 (29 December 2022)
+
 This is my first attempt at driver code.  I am only one month into any form of home automation.  So I have lots to learn and I am happy to have comments & suggestions in respect of this trial driver code.
 
 I bought a hubitat C7 and a POPP zigbee radiator TRV (model 701721).  They are compatibile but I could not find an appropriate driver so I decided to write one.
@@ -80,3 +82,6 @@ p.s. - good tip I found in the community chats somewhere if you have been using 
 
 v1.1 (21 December 2022)
 Implements user defined min and max heating setpoints between the manufacturer fixed values of 5 and 35; see attributes eTRVMinHeatSetpointLimit and eTRVMaxHeatSetpointLimit. Anttempt to set a heatingSetpoint value outside these limits is ignored by the driver.
+
+v1.2 (29 December 2022)
+Implements a Child Lock toggle in the deveice driver
