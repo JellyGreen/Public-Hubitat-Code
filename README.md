@@ -8,6 +8,12 @@ v1.2 (29 December 2022)
 
 v1.6 (4 January 2022)
 
+_________________________________________
+
+NOTES BELOW FOR EACH VERSION RELEASE
+_________________________________________
+v1.1
+
 This is my first attempt at driver code.  I am only one month into any form of home automation.  So I have lots to learn and I am happy to have comments & suggestions in respect of this trial driver code.
 
 I bought a hubitat C7 and a POPP zigbee radiator TRV (model 701721).  They are compatibile but I could not find an appropriate driver so I decided to write one.
@@ -89,10 +95,49 @@ v1.2 (29 December 2022)
 Implements a Child Lock toggle in the deveice driver
 
 v1.6 (4 January 2022) 
-This implement most remaining features from the thermostat cluster (not scheduling yet)
-The following attributes as used - NOTE the valid ENUM descriptors:
+This implement most remaining features from the thermostat cluster (not scheduling yet). 
+Heatting Setpoint is set using the applicable thermostat cluster command with setting '01' for fast TRV reaction. (alternative obsolete code is included (but  'commented-out') in the driver 
 
+The following attributes as used - NOTE the only valid ENUM values:
 
+        attribute "eTRVPIHeatingDemand", "number"                 //  0x0201 0x0008 PIHeatingDemand
+        attribute "eTRVOrientation", "string"                     //  0x0201 0x4014 eTRV Orientation
+        attribute "eTRVHeatingSetpointSource", "number"           //  0x201 0x0030 Setpoint Change Source  // not implemented yet
+        attribute "eTRVExternalSensorTemperature", "number"       //  0x0201 0x4015 External Measured Room Sensor
+        attribute "eTRVRadiatorCovered", "string"                 //  0x0201 0x4016 Radiator Covered - 0 for NOT covered, 1 for covered
+        attribute "eTRVCallingForHeat", "string"                  //  0x0201 0x4031 Heat Supply Request
+        attribute "eTRVViewingDirection", "string"                //  0x0204 0x4000 Viewing Direction
+        attribute "eTRVMinHeatSetpointLimit", "number"            //  0x0201 0x0015 Min Heat Setpoint Limit / user set minimum, default and lower possible limit is 5°C celsius
+        attribute "eTRVMaxHeatSetpointLimit", "number"            //  0x0201 0x0016 Max Heat Setpoint Limit / user set maximum, default and upper possible limit is 35°C celsius
+	      attribute "eTRVLockState", "enum", ["unlocked", "locked"] //  0x0204 0x0001 Child Lock, default is unlocked alternative is locked (There are no apparent different levels of locking)
+        attribute "eTRVAggressionFactor", "number"                //  0x0201 0x4020 Aggression Factor 1 to 10  0b0000 0001 to 0b0000 1010 note bit 4 0b000x 1 is enable and 0 is disable quick open feature
+        attribute "eTRVHeatAvailable", "enum", ["no", "yes"]      //  0x0201 0x4030 Heat Available, 0 for No Heat Available; 1 for Heat Available 
+        attribute "eTRVOpenWindowFeature", "enum", ["off", "on"]  //0x0201 0x4051 Open Window Feature on / off
+        attribute "eTRVOpenWindowDetected", "enum", ["quarantine", "closed", "imminent", "open", "reported"]   //0x0201 0x4000 TRV Open Window Detection
+        attribute "eTRVOpenWindowExtSen", "enum", ["closed", "open"]  // 0x0201 0x4003 TRV Open Window Detection
+        attribute "eTRVLoadSharing",  "enum", ["off", "on"]       //  0x0201, 0x4032 TRV Load Balancing Enabled
+        attribute "eTRVLoadRadiatorMean", "string"                //  0x0201, 0x4040, TRV Load Radiator Mean        
+        attribute "eTRVLoadEstimate", "string"                    //  0x0201, 0x404A TRV Load Estimate for this radiator
+        attribute "eTRVRegulationOffset", "number"                //  0x0201, 0x404B TRV Regulation Off-set -in steps of 0.1°C: range –2.5 °C to +2.5 °C (0xE7 … 0x19). 
+        attribute "eTRVAdaptionRunControl", "string"              //  0x0201, 0x404C TRV Adaptation Run Control: default 00, 01 for initiate; 02 for cancel
+        attribute "eTRVAdaptationRunStatus", "string"             //  0x0201, 0x404D TRV Adaptation Run Status: bit 0 in progress, bit 1 Valve Characteristic found, bit 2 Valve Characteristic lost
+        attribute "eTRVAdaptationRunSetting", "enum", ["manual", "automatic"]    //  0x0201, 0x404E TRV Adaptation Run Settings: 00 default; 01 for enabled automatic     
+        attribute "eTRVPreheatStatus", "string"                   //  0x0201, 0x404F TRV Preheat Status: 00 for off, 01 for on (default) - reportable
+        attribute "eTRVPreheatTime", "string"                     //  0x0201, 0x4050 TRV Preheat Time: Time Stamp, default 00000000, max FFFFFFFF - reportable 
+        attribute "eTRVExerciseDay", "enum", ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "undefined"] //TRV Exercise Day 00 for Sunday to 06 for Saturday, 07 for undefined
+        attribute "eTRVExerciseTime", "string"                    //  0x0201, 0x4011, TRV Exercise Minutes from midnight max 1439
+        attribute "eTRVMountingModeActive", "enum", ["no, mounted", "yes, not mounted or reset"]         //  0x0201, 0x4012, TRV Mounting Mode Active: 00 for mounted and 01 for not mounted or factory reset 
+        attribute "eTRVMountingModeControl", "enum", ["Go to mounting mode", "Go to Mounted position"]   //  0x0201, 0x4013, TRV Mounting Mode Control: 00 for Ready for physical mounting on valve, 01 for mounted or as if mounted
+                         
+Also includes a 'switch' capability which sets the heating set point to Min Heat Setpoint Limit (off) or Max Heat Setpoint Limit (on).
+
+You may need to read the Danfoss eTRV Zigbee Spec (see link above) to understand the attributes.
+
+ *  Imortant Note
+ *  Chat in HA community identifies a known trouble with the TRV rejecting attempts to write External Sensor Temperature when, as required by the Danfoss spec values are updated regularly.
+ *  That problem is not an error in the driver but in the TRV firmware as far as I can tell.
+ *  My successful 'work around' for this is to send write -80o as External Sensor Temperature first (turning the feature off) then pause for a few seconds and then send the actual External Sensor Temperature.  
+ *  This has been working for me with out any problem.  Hopefully there will be a firmware upgrade that overcomes this issue for good by the time I implement OTA updating.  
 
 
 
