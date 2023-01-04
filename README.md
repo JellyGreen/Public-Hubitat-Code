@@ -98,7 +98,7 @@ v1.6 (4 January 2022)
 This implement most remaining features from the thermostat cluster (not scheduling yet). 
 Heatting Setpoint is set using the applicable thermostat cluster command with setting '01' for fast TRV reaction. (alternative obsolete code is included (but  'commented-out') in the driver 
 
-The following attributes as used - NOTE the only valid ENUM values:
+The following attributes as used - NOTE the valid ENUM values:
 
         attribute "eTRVPIHeatingDemand", "number"                 //  0x0201 0x0008 PIHeatingDemand
         attribute "eTRVOrientation", "string"                     //  0x0201 0x4014 eTRV Orientation
