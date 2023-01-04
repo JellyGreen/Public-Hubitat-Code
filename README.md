@@ -6,6 +6,8 @@ v1.1 (21 December 2022)
 
 v1.2 (29 December 2022)
 
+v1.6 (4 January 2022)
+
 This is my first attempt at driver code.  I am only one month into any form of home automation.  So I have lots to learn and I am happy to have comments & suggestions in respect of this trial driver code.
 
 I bought a hubitat C7 and a POPP zigbee radiator TRV (model 701721).  They are compatibile but I could not find an appropriate driver so I decided to write one.
@@ -85,3 +87,12 @@ Implements user defined min and max heating setpoints between the manufacturer f
 
 v1.2 (29 December 2022)
 Implements a Child Lock toggle in the deveice driver
+
+v1.6 (4 January 2022) 
+This implement most remaining features from the thermostat cluster (not scheduling yet)
+The following attributes as used - NOTE the valid ENUM descriptors:
+
+
+
+
+
