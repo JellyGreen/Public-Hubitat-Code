@@ -8,6 +8,8 @@ v1.2 (29 December 2022)
 
 v1.6 (4 January 2023)
 
+v2.6 (23 February 2023) - with Thermostat Capability for use with Thermostat Scheduler
+
 _________________________________________
 
 NOTES BELOW FOR EACH VERSION RELEASE
