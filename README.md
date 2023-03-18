@@ -10,6 +10,8 @@ v1.6 (4 January 2023)
 
 v2.6 (23 February 2023) - with Thermostat Capability for use with Thermostat Scheduler
 
+v2.7 (18 March 2023) minor coding corrections
+
 _________________________________________
 
 NOTES BELOW FOR EACH VERSION RELEASE
@@ -96,9 +98,12 @@ Implements user defined min and max heating setpoints between the manufacturer f
 v1.2 (29 December 2022)
 Implements a Child Lock toggle in the deveice driver
 
-v1.6 (4 January 2022) 
+v1.6 (4 January 2022) & v2.6 (February 2023)
 This implement most remaining features from the thermostat cluster (not scheduling ). 
-Heatting Setpoint is set using the applicable thermostat cluster command with setting '01' for fast TRV reaction. (alternative obsolete code is included (but  'commented-out') in the driver 
+
+This now works as a Thermostat so that it can be controlled directly with Thermostat scheduler
+
+Heating Setpoint is set using the applicable thermostat cluster command with setting '01' for fast TRV reaction. (alternative obsolete code is included (but  'commented-out') in the driver 
 
 The following attributes as used - NOTE the valid ENUM values:
 
@@ -141,5 +146,5 @@ You may need to read the Danfoss eTRV Zigbee Spec (see link above) to understand
  *  My  'work around' for this is to send write -80o as External Sensor Temperature first (turning the feature off) then pause for a few seconds and then send the actual External Sensor Temperature.  I am not clear whether this was successful and I now operate my TRVs successfully without external sensors.
  *  Although I had hoped to implement OTA firmware updating, I have not done this because I have been unable to find any firmware to update my eTRVs with.  
 
-v2.6 Minor corrections in coding. 
+v2.7 Minor corrections in coding. 
 
