@@ -97,7 +97,7 @@ v1.2 (29 December 2022)
 Implements a Child Lock toggle in the deveice driver
 
 v1.6 (4 January 2022) 
-This implement most remaining features from the thermostat cluster (not scheduling yet). 
+This implement most remaining features from the thermostat cluster (not scheduling ). 
 Heatting Setpoint is set using the applicable thermostat cluster command with setting '01' for fast TRV reaction. (alternative obsolete code is included (but  'commented-out') in the driver 
 
 The following attributes as used - NOTE the valid ENUM values:
@@ -138,8 +138,8 @@ You may need to read the Danfoss eTRV Zigbee Spec (see link above) to understand
  *  Imortant Note
  *  Chat in HA community identifies a known trouble with the TRV rejecting attempts to write External Sensor Temperature when, as required by the Danfoss spec values are updated regularly.
  *  That problem is not an error in the driver but in the TRV firmware as far as I can tell.
- *  My successful 'work around' for this is to send write -80o as External Sensor Temperature first (turning the feature off) then pause for a few seconds and then send the actual External Sensor Temperature.  
- *  This has been working for me with out any problem.  Hopefully there will be a firmware upgrade that overcomes this issue for good by the time I implement OTA updating.  
+ *  My  'work around' for this is to send write -80o as External Sensor Temperature first (turning the feature off) then pause for a few seconds and then send the actual External Sensor Temperature.  I am not clear whether this was successful and I now operate my TRVs successfully without external sensors.
+ *  Although I had hoped to implement OTA firmware updating, I have not done this because I have been unable to find any firmware to update my eTRVs with.  
 
-
+v2.6 Minor corrections in coding. 
 
