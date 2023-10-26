@@ -12,6 +12,8 @@ v2.6 (23 February 2023) - with Thermostat Capability for use with Thermostat Sch
 
 v2.7 (18 March 2023) minor coding corrections
 
+v2.8 (26 October 2023) adds supportedThermostatMode and supportedThermostatFanmode (in initialise) to work with HubitatThermostat Controller App - thanks to Mark, Simon and Krassimir
+
 _________________________________________
 
 NOTES BELOW FOR EACH VERSION RELEASE
