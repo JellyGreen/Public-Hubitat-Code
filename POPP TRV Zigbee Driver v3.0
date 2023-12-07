@@ -33,7 +33,8 @@
  *  Version 2.7 - minor coding corrections
  *  Version 2.8 - added compatibility for the Thermostat Controller - thanks to MarkM, Simon-sburrke781 and Krassimir-kkossev
  *  Version 3.0 - implements SWITCH function - with 'off' setting thermostatMode to off and heatingSetpoint to eTRVMinHeatSetointLimit; setting a heatingSetpoint above this min automatically sets thermstatMode to heat; ...  
- *                                                       ... heat and on commands only change the thermostatMode to heat, they do not change the heatingSetpoint 
+ *                                                       ... heat and on commands only change the thermostatMode to heat, they do not change the heatingSetpoint
+ *  Version 3.0.1 - Initialize now includes a Refresh() to find unreported attributes 
  *  
  *  Imortant Note
  *  Chat in HA community identifies a known trouble with the TRV rejecting attempts to write External Sensor Temperature when, as required by the Danfoss spec values are updated regularly.
@@ -44,7 +45,7 @@
  */
  
 metadata {
-	definition (name: "POPP TRV Trial Zigbee Driver v3.0", namespace: "jellygreen", author: "jellygreen", singleThreaded: true) {
+	definition (name: "POPP TRV Trial Zigbee Driver v3.0.1", namespace: "jellygreen", author: "jellygreen", singleThreaded: true) {
 
         capability "Thermostat"                    
         capability "Battery"                       // has attribute "battery"
@@ -130,6 +131,7 @@ def installed() {
 
 
 def initialize(){
+    refresh()
     sendEvent(name: "thermostatFanMode", value: "auto", descriptionText: "Only has no fan")
     sendEvent(name: "thermostatMode", value: "heat", descriptionText: "Only has heat or simulated off mode")
     sendEvent(name: "thermostatOperatingState", value: "idle", descriptionText: "for dashboard thermostat tile colour only")    
