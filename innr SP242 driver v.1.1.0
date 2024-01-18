@@ -175,7 +175,7 @@ def configure() {
 
 
 void installed() {    //Invoked by Hubitat when driver is installed
-    onePressSetuo()
+    onePressSetup()
     state.driverInstalledDateTime = new Date().format("dd/MMM/yyyy HH:mm:ss")
     if (infoLogging) log.info "${device.displayName} installed by JellyGreen's driver" 
 }
