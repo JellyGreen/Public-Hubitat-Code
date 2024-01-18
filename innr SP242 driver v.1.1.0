@@ -57,7 +57,7 @@ metadata {
         
         attribute 'powerFactor', 'number'         // calculated, not read
 
-        fingerprint profileId: '0104', endpointId: '01', inClusters: '0000,0003,0004,0005,0006,0008,1000,0B04,0702,E001', outClusters: '000A,0019', manufacturer: 'innr', model: 'SP 242'
+        fingerprint profileId:"0104", endpointId:"01", inClusters:"0000,0003,0004,0005,0006,0008,1000,0702,0B04,E001", outClusters:"000A,0019", model:"SP 242", manufacturer:"innr"
     }
 
 /**
