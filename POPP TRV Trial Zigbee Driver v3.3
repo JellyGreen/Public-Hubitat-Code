@@ -1,0 +1,1631 @@
+/**
+ *  Driver Adapted and Developed by JellyGreen
+ *
+ *  Licensed under the Apache License, Version 2.0 (the "License"); you may not use this file except
+ *  in compliance with the License. You may obtain a copy of the License at:
+ *
+ *      http://www.apache.org/licenses/LICENSE-2.0
+ *
+ *  Unless required by applicable law or agreed to in writing, software distributed under the License is distributed
+ *  on an "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the License
+ *  for the specific language governing permissions and limitations under the License.
+ *
+ *  Driver for Danfoss Ally TRV
+ *  Popp ZigBee Thermostat 701721 and the equivalent Hive TRV002
+ *  Badged version of Danfoss Ally eTRV 1.18 - White label - Danfoss 014G2463 - note Danfos manufacturing code [mfgCode:0x1246]
+ *
+ *  Credit to many including, esp ckpt-martin for the work he did on e-cozy zigbee driver from which this was developed
+ *  
+ *  Version: 1.0 - initial - Date 2022-12-18
+ *  Version: 1.1 adds min and max setpoints - Date 2022-12-19
+ *  Version: 1.2 adds child locking as a toggle - Date: 2022-12-28
+ *  Version: 1.3 changes the child lock from toggle to set - Date 2022-12-28
+ *  Version: 1.4 implements eTRVAggressionFactor (read only) and eTRVHeatAvailable and also Switch (on/max and off/min) - Date 2022-12-30
+ *  Version: 1.5 implements command code for setting 'heating setpoint' and most remaining attributes (except off-set and schedules) - Date 2023-01-01
+ *  Version: 1.6 implements full thermostat reporting (but 'comments-out' ones that are not being used. - Date 2023-01-04
+ *  Version: 2.0 gives in and adopt the thermostat capabilities so that I can use thermostat scheduler without a virtual thermostat to miror the TRV - it send dummy events for thermostatMode and thermostateOperatingState
+ *  Version: 2.1 - just a few tidy-ups
+ *  Version: 2.2 - adds getting Basic Cluster in initialize()
+ *  Version: 2.3 - prepares to read OTA, Time and Polling Control data - not yet implemented
+ *  Version: 2.4 - adds attributes and reporting for the eTRV button state / adds attribute for Device Identifing State Remaining Time / adds attribute and command for getting Battery Voltage
+ *  Version: 2.5 - changes times to 24 hours
+ *  Version: 2.6 - adds settings for Fast Response and Response Aggression in relation to heatingSetpoints 
+ *  Version 2.7 - minor coding corrections
+ *  Version 2.8 - added compatibility for the Thermostat Controller - thanks to MarkM, Simon-sburrke781 and Krassimir-kkossev
+ *  Version 3.0 - implements SWITCH function - with 'off' setting thermostatMode to off and heatingSetpoint to eTRVMinHeatSetointLimit; setting a heatingSetpoint above this min automatically sets thermstatMode to heat; ...  
+ *                                                       ... heat and on commands only change the thermostatMode to heat, they do not change the heatingSetpoint
+ *  Version 3.0.1 Initialize now includes a Refresh() to find unreported attributes 
+ *  Version 3.1    Allows Preference for ThermostatOperatingState to be set by the user via an app - or couples ThermostatOperatingState to Calling for Heat where PIHeatingDemand >0 - accepts only "heating" and "idle"
+ *  Version 3.2    If heatingSetpoint outside eTRVMinSetpoint or eTRVMaxSetpoint thresholds, those min or max values are used; previously such values were ignored - ditto for permitted range of eTRVRegulationOffset
+ *  Version 3.3    Error Code Reporting and Reading in Configuration and Refresh - eTRVErrorFlags - see error code meanings in parse() & eTRVBatteryWarning [no, low or critical]
+ *  
+ *  Imortant Note
+ *  Chat in HA community identifies a known trouble with the TRV rejecting attempts to write External Sensor Temperature when, as required by the Danfoss spec values are updated regularly.
+ *  That problem is not an error in the driver but in the TRV firmware as far as I can tell. I tried a workaround of having a three second gap between setting the external temperature to -80 and then the external temperature reading. 
+ *  However, I am unclear whether that worked, and now operate my eTRVs successfully without an external sensor.  
+ *   
+ *  There does not appear to be any firmware release which could be used for updating the eTRV firmware so I have not implemented OTA firmware updating.
+ */
+ 
+metadata {
+	definition (name: "POPP TRV Trial Zigbee Driver v3.3", namespace: "jellygreen", author: "jellygreen", singleThreaded: true) {
+
+        capability "Thermostat"                    
+        capability "Battery"                       // has attribute "battery"
+        capability "Sensor"
+	    capability "TemperatureMeasurement"        // has attribute "temperature"
+	    capability "Refresh"
+	    capability "Configuration"
+        capability "Initialize"
+        capability "Switch"                        // has attributes and commands on and off
+
+        // command "setMode"
+	    command "increaseHeatSetpoint"
+	    command "decreaseHeatSetpoint"
+        command "changeTRVOrientation", [[name: "Toggle TRV Orientation"]] // default is horizontal
+        command "changeTRVViewingDirection", [[name: "Toggle TRV Display Direction"]] // 
+        command "changeTRVRadiatorCovered", [[name: "Toggle TRV Covered or UnCovered"]] // default is uncovered
+        command "setExternalSensorTemperature", [[name:"External Sensor Temperature", type: "NUMBER", description: "Temperature, °C, or -80 to disable" ] ] //-8000 hundredths or -80 degrees to disable
+        command "setTRVMinHeatSetpointLimit", [[name:"Minimum Heat Setpoint Temperature", type: "NUMBER", description: "Temperature, °C, between 5°C and eTRVMaxHeatSetpointLimit" ] ] //default 5°C
+        command "setTRVMaxHeatSetpointLimit", [[name:"Maximum Heat Setpoint Temperature", type: "NUMBER", description: "Temperature, °C, between eTRVMinHeatSetpointLimit and 35°C" ] ] //default 35°C
+	    command "setTRVLockState", [[name: "Set Child Lock State", type: "ENUM", constraints: ["unlocked", "locked"]]] // default is unlocked, unlocked
+        command "setTRVHeatAvailable", [[name: "Set Heat Available, no or yes", type: "ENUM", constraints:["no", "yes"]]] //
+        command "setAdaptionRun", [[name: "Trigger / Cancel Adaption Run", type: "ENUM", constraints:["inactive", "initiate", "cancel"]]]
+        command "setAdaptionRunSetting", [[name: "Adaption Run Manual / Automatic", type: "ENUM", constraints:["manual", "automatic"]]]
+        command "setLoadSharing", [[name: "Load Sharing on/ off", type: "ENUM", constraints:["on", "off"]]] 
+        command "setOpenWindowFeature",  [[name: "Open Window Feature on/ off", type: "ENUM", constraints:["off", "on"]]] 
+        command "setOpenWindowExtSensor",  [[name: "Open Window External Sensor State", type: "ENUM", constraints:["closed", "open"]]] 
+        command "setExerciseDay", [[name: "Exercise Day", type: "ENUM", constraints: ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "undefined"]]]                                     
+        command "setExerciseTime", [[name: "Exercise Minutes after midnight, max 1439", type:"NUMBER", description: "Minutes after midnight"]]
+        command "setMountingModeControl",  [[name: "Mounting Mode Control", type: "ENUM", constraints:["Go to mounting mode", "Go to Mounted position"]]] 
+        command "setRegulationOffset", [[ name: "Set TRV Regulation Offset", type:"NUMBER", description: "-2.5°C to +2.5°C in 0.1°C steps" ]]
+        command "getBatteryVoltage", [[ name: "Ask eTRV for its current battery voltage", type:"NUMBER"]]
+        command "setTRVFastResponse", [[name: "Set TRV Fast Response Mode, no or yes", type: "ENUM", constraints:["no", "yes"]]] // when with eTRVAggressionFactor bit 4, 1 enable / 0, disable
+        command "setTRVAggressionFactor", [[ name: "Set TRV Aggression Factor", type:"NUMBER", description: "1 (fast) to 10 (slow)" ]] // default 1
+        command "setThermostatOperatingState", [[name: "Set Thermostat Operating State", type:"ENUM", constraints:["heating", "idle"]]]
+        
+        attribute "eTRVPIHeatingDemand", "number"                 //  0x0201 0x0008 PIHeatingDemand
+        attribute "eTRVOrientation", "string"                     //  0x0201 0x4014 eTRV Orientation
+        attribute "eTRVSetpointSource", "string"           //  0x0201 0x0030 Setpoint Change Source
+        attribute "eTRVExternalSensorTemperature", "number"       //  0x0201 0x4015 External Measured Room Sensor
+        attribute "eTRVRadiatorCovered", "string"                 //  0x0201 0x4016 Radiator Covered - 0 for NOT covered, 1 for covered
+        attribute "eTRVCallingForHeat", "string"                  //  0x0201 0x4031 Heat Supply Request
+        attribute "eTRVViewingDirection", "string"                //  0x0204 0x4000 Viewing Direction
+        attribute "eTRVMinHeatSetpointLimit", "number"            //  0x0201 0x0015 Min Heat Setpoint Limit / user set minimum, default and lower possible limit is 5°C celsius
+        attribute "eTRVMaxHeatSetpointLimit", "number"            //  0x0201 0x0016 Max Heat Setpoint Limit / user set maximum, default and upper possible limit is 35°C celsius
+	    attribute "eTRVLockState", "enum", ["unlocked", "locked"] //  0x0204 0x0001 Child Lock, default is unlocked alternative is locked (There are no apparent different levels of locking)
+        attribute "eTRVHeatAvailable", "enum", ["no", "yes"]      //  0x0201 0x4030 Heat Available, 0 for No Heat Available; 1 for Heat Available 
+        attribute "eTRVOpenWindowFeature", "enum", ["off", "on"]  //0x0201 0x4051 Open Window Feature on / off
+        attribute "eTRVOpenWindowDetected", "enum", ["quarantine", "closed", "imminent", "open", "reported"]   //0x0201 0x4000 TRV Open Window Detection
+        attribute "eTRVOpenWindowExtSen", "enum", ["closed", "open"]  // 0x0201 0x4003 TRV Open Window Detection
+        attribute "eTRVLoadSharing",  "enum", ["off", "on"]       //  0x0201, 0x4032 TRV Load Balancing Enabled
+        attribute "eTRVLoadRadiatorMean", "string"                //  0x0201, 0x4040, TRV Load Radiator Mean        
+        attribute "eTRVLoadEstimate", "string"                    //  0x0201, 0x404A TRV Load Estimate for this radiator
+        attribute "eTRVLoadEstimatePercent", "number"             //    JL attribute - Percent of LoadEstimate String
+        attribute "eTRVRegulationOffset", "number"                //  0x0201, 0x404B TRV Regulation Off-set -in steps of 0.1°C: range –2.5 °C to +2.5 °C (0xE7 … 0x19). 
+        attribute "eTRVAdaptionRunControl", "string"              //  0x0201, 0x404C TRV Adaptation Run Control: default 00, 01 for initiate; 02 for cancel
+        attribute "eTRVAdaptationRunStatus", "string"             //  0x0201, 0x404D TRV Adaptation Run Status: bit 0 in progress, bit 1 Valve Characteristic found, bit 2 Valve Characteristic lost
+        attribute "eTRVAdaptationRunSetting", "enum", ["manual", "automatic"]    //  0x0201, 0x404E TRV Adaptation Run Settings: 00 default; 01 for enabled automatic     
+        attribute "eTRVPreheatStatus", "string"                   //  0x0201, 0x404F TRV Preheat Status: 00 for off, 01 for on (default) - reportable
+        attribute "eTRVPreheatTime", "string"                     //  0x0201, 0x4050 TRV Preheat Time: Time Stamp, default 00000000, max FFFFFFFF - reportable 
+        attribute "eTRVExerciseDay", "enum", ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "undefined"] //TRV Exercise Day 00 for Sunday to 06 for Saturday, 07 for undefined
+        attribute "eTRVExerciseTime", "string"                    //  0x0201, 0x4011, TRV Exercise Minutes from midnight max 1439
+        attribute "eTRVMountingModeActive", "enum", ["no, mounted", "yes, not mounted or reset"]         //  0x0201, 0x4012, TRV Mounting Mode Active: 00 for mounted and 01 for not mounted or factory reset 
+        attribute "eTRVMountingModeControl", "enum", ["Go to mounting mode", "Go to Mounted position"]   //  0x0201, 0x4013, TRV Mounting Mode Control: 00 for Ready for physical mounting on valve, 01 for mounted or as if mounted
+        attribute "batteryVoltage", "number"
+        attribute "eTRVButtonState", "string"                     // 0x0003, 0X4000 eTRV button state [pressed or released] returns to released 3 second after physical release 
+        attribute "eTRVIdTimeRemaining", "number"                 // 0x0003, 0X0000 eTRV bIdentification State Time Remaining in seconds
+        attribute "eTRVFastResponse", "enum", ["no", "yes"]       // bespoke - speed of response to changes in heating setpoint
+        attribute "eTRVAggressionFactor", "number"                // 0x0201 0x4020 Aggression Factor 1 to 10  0b0000 0001 to 0b0000 1010 note bit 4 0b000x 1 is enable and 0 is disable quick open featureeTRVErrorFlagseTRVE
+        attribute "eTRVErrorFlags", "string"                      // 0x0b05 attribute 0x4000 error codes
+        attribute "eTRVBatteryWarning", "enum", ["no", "low", "critical"]  // battery related error codes from 0x0b05 attribute 0x4000
+        
+        fingerprint profileId: "0104", endpointId: "01", inClusters: "0000,0001,0003,000A,0020,0201,0204,0B05", outClusters: "0000,0019", manufacturer: "D5X84YU", model: "eT093WRO"        
+	}
+
+	preferences {
+      input (name: "debugLogging", type: "bool", title: "Enable debug message logging", description: "",defaultValue: true)
+      input (name: "infoLogging", type: "bool", title: "Enable info message logging", description: "",defaultValue: true)
+      input (name: "OperatingStateByUser", type: "bool", title: "Allow User To Set Thermostat Operating State (true) or link it to Calling for Heat (false)", description: "", defaultValue: true)
+	}
+}
+
+def installed() {
+    //  state.clear() This would delete al states and atomic states (what are they?) - but perhaps I want to keep some like state.driverInstalledDateTime
+    //  currentState.remove() // delete current attribute values and repopulate valid attributes for this driver via the refresh() method via config??    
+    state.driverInstalledDateTime = new Date().format("dd/MMM/yyyy HH:mm:ss")
+    if (infoLogging) log.info "JellyGreen's driver for ${device.displayName} installed"
+}
+
+
+def initialize(){
+    refresh()
+    sendEvent(name: "thermostatFanMode", value: "auto", descriptionText: "Only has no fan")
+    sendEvent(name: "thermostatMode", value: "heat", descriptionText: "Only has heat or simulated off mode")
+    sendEvent(name: "thermostatOperatingState", value: "idle", descriptionText: "for dashboard thermostat tile colour only")    
+    sendEvent(name: "supportedThermostatModes", value: ["auto", "off", "heat", "emergency heat", "cool"])                        //MMA but only heat and simulated off
+	sendEvent(name: "supportedThermostatFanModes", value: ["auto","circulate","on"])                                             //MMA
+    sendEvent (name: "eTRVBatteryWarning", value: "no", descriptionText: "No battery error code recieved")                        // taken from any reported Error Codes
+    // sendEvent(name: "eTRVLoadEstimate", value: "0000", descriptionText: "initialising eTRVLoadEstimate as zero")              // not needed - this does report
+    def initializeCommands = []
+    initializeCommands += readBaiscClusterAttributes()        // Basic Cluster
+    // initializeCommands += readTimeClusterAttributes()      // Time Cluster
+    // initializeCommands += readOTAClusterAttributes()       // OTA Cluster
+    // initializeCommands += readPollingControlClusterAttributes()     // PollingControlCluster
+    if (debugLogging) log.debug "initializeCommands(): $initializeCommands"
+    state.driverInitializedDateTime = new Date().format("dd/MMM/yyyy HH:mm:ss")
+    if (infoLogging) log.info "JellyGreen's driver for ${device.displayName} initialized"
+	return delayBetween(initializeCommands,200)
+    // getSetting()
+}
+
+def updated() {
+    state.driverUpdatedDateTime = new Date().format("dd/MMM/yyyy HH:mm:ss")
+    if (infoLogging) log.info "JellyGreen's driver for ${device.displayName} updated"
+    // if(debugLogging) runIn(1800,logsOff)
+    if (infoLogging) log.info "OperatingStateByUser $OperatingStateByUser" //state.
+    initialize()
+}
+
+void logsOff(){
+     app.updateSetting("debugLogging",[value:"false",type:"bool"])
+}
+
+// parse attribute information which arrives from the device into events/attributes, states or device data
+def parse(String description) {
+	if (debugLogging) log.debug "Parse description $description"
+	def map = [:]
+    
+    if (description?.startsWith("catchall")) 
+    {
+       	def descMap = parseDescriptionAsMap(description)
+		if (debugLogging) log.debug "Parsing catchall - Desc Map: $descMap" 
+    }
+    
+	else if (description?.startsWith("read attr -")) 
+    {
+		def descMap = parseDescriptionAsMap(description)
+		if (debugLogging) log.debug "Parsing read attr - Desc Map: $descMap"
+
+        if (descMap.cluster == "0000")  // Parse Basic Cluster 
+        { 
+            if (descMap.attrId == "0000") // ZCLVersion - R - unint8
+            {updateDataValue("ZCLVersion", descMap.value)}
+
+            else if (descMap.attrId == "0001") // ApplicationVersion - R - unint8
+		    {updateDataValue("ApplicationVersion", descMap.value)}
+            
+            else if (descMap.attrId == "0002") // StackVersion - R - unint8
+		    {updateDataValue("StackVersion", descMap.value)}
+            
+            else if (descMap.attrId == "0003") // HWVersion - R - unint8
+		    {updateDataValue("HWVersion", descMap.value)}
+            
+            else if (descMap.attrId == "0004") // ManufacturerName - R - string
+		    {updateDataValue("ManufacturerName", hexToAscii(descMap.value))}
+            
+            else if (descMap.attrId == "0005") // ModelIdentifier - R - string
+		    {updateDataValue("ModelIdentifier", hexToAscii(descMap.value))}
+            
+            else if (descMap.attrId == "0006") // DateCode - R - string
+		    {updateDataValue("DateCode", hexToAscii(descMap.value))}
+            
+            else if (descMap.attrId == "0007") // PowerSource - R - enum8
+		    {updateDataValue("PowerSource", descMap.value)}
+            
+            else if (descMap.attrId == "0010") // LocationDescription - R - string (0 - 16)
+		    {updateDataValue("LocationDescription", hexToAscii(descMap.value))}
+            
+            else if (descMap.attrId == "4000") // SoftwareBuildID - R - string(16)
+		    {
+                if (descMap.value) {updateDataValue("SoftwareBuildID", hexToAscii(descMap.value))}
+                if(debugLogging) log.debug "SoftwareBuildID: $descMap.value"
+            }
+        }
+
+        else if (descMap.cluster == "0001")  // Parse Power Cluster 
+        {    
+            if (descMap.attrId == "0020") // Battery Voltage - in decivolts so divide by 10
+		    {
+			    map.name = "batteryVoltage"
+                map.unit = "V"
+                map.descriptionText = "eTRV Battery Voltage" //  - when last read not reported automatically - so make a command
+			    def float batteryVoltage = Integer.parseInt(descMap.value, 16) /10
+			    map.value = batteryVoltage
+			}
+            else if (descMap.attrId == "0021") // Battery Percentage Remaining, 0 to 200 in 0.5% steps
+		    {
+			    map.name = "battery"
+                map.unit = "%"
+                map.descriptionText = "eTRV Battery percentage remaining"
+			    def float batteryPercentage = Integer.parseInt(descMap.value, 16) /2
+			    map.value = batteryPercentage
+			}                
+		}        
+
+        else if (descMap.cluster == "0003")  // Parse Identify Cluster 
+        {
+            if (descMap.attrId == "0000") // r - Device Identification State Time Remaining
+            { 
+                map.name = "eTRVIdTimeRemaining"
+                map.descriptionText = "eTRV Identification State Time Remaining" // counts down to zero in seconds
+			    map.value = descMap.value
+            }
+            
+            else if (descMap.attrId == "4000") // r - Button state
+            { 
+                map.name = "eTRVButtonState"
+                map.descriptionText = "eTRV Button State" // returns to 0x00, 3 seconds after release
+			    if (descMap.value == "00") {map.value = "released"}
+			    else if (descMap.value == "01") {map.value = "pressed" }
+                else {if (debugLogging) log.debug "invalid eTRVOrientation"}
+            }
+        }
+        
+/**         
+        else if (descMap.cluster == "000A")  // Parse Time Cluster 
+        {
+            if (descMap.attrId == "0000") // rw - UTC - Time
+            {    state.time = descMap.value}
+
+            else if (descMap.attrId == "0001") // rw - map8 - TimeStatus
+		    {    state.timeStatus = ("$descMap.value")}
+            
+            else if (descMap.attrId == "0002") // rw - int32 - TimeZone  
+		    {    state.timeZone = ("$descMap.value")}
+            
+            else if (descMap.attrId == "0003") // rw - uint32 - DstStart
+		    {    state.dstStart = ("$descMap.value")}
+            
+            else if (descMap.attrId == "0004") // rw - uint32 - DstEnd
+		    {    state.dstEnd = ("$descMap.value")}
+            
+            else if (descMap.attrId == "0005") // r - int32 - DstShift
+		    {    state.dstShift = ("$descMap.value")}
+            
+            else if (descMap.attrId == "0007") // r - uint32 - LocalTime
+		    {    state.localTime = ("$descMap.value")}
+            
+            else if (descMap.attrId == "0008") //r - UTC - LocalSetTime
+		    {    state.localSetTime = ("$descMap.value")}            
+        }
+       
+      else if (descMap.cluster == "0019")  // Parse OTA Cluster 
+      {
+            if (descMap.attrId == "0000") // UpgradeServerID - R - 
+            {updateDataValue("UpgradeServerID", descMap.value)}
+
+            else if (descMap.attrId == "0001") // FileOffset - R - 
+		    {updateDataValue("FileOffset", descMap.value)}
+            
+            else if (descMap.attrId == "0002") // CurrentFileVersion - R -  
+		    {updateDataValue("CurrentFileVersion", Integer.toString(descMap.value, 16))}
+            
+            else if (descMap.attrId == "0003") // CurrentZigBeeStackVersion - R - uint32
+		    {updateDataValue("CurrentZigBeeStackVersion", Integer.toString(descMap.value, 16))}
+            
+            else if (descMap.attrId == "0004") // DownloadedFileVersion - R -  uint16
+		    {updateDataValue("DownloadedFileVersion", descMap.value)}
+            
+            else if (descMap.attrId == "0005") // DownloadedZigBeeStackVersion   - R -  
+		    {updateDataValue("DownloadedZigBeeStackVersion", descMap.value)}
+            
+            else if (descMap.attrId == "0006") // ImageUpgradeStatus - R - 
+		    {updateDataValue("ImageUpgradeStatus", descMap.value)}
+            
+            else if (descMap.attrId == "0007") // ManufacturerID - R -  uint16
+		    {updateDataValue("OTAManufacturerID", Integer.toString(descMap.value, 16))}  // added OTA to distinguish
+          
+            else if (descMap.attrId == "0008") // Image Type ID - R - 
+		    {updateDataValue("ImageTypeID", descMap.value)}
+          
+            else if (descMap.attrId == "0009") // MinimumBlockPeriod - R -  
+		    {updateDataValue("MinimumBlockPeriod", descMap.value)}
+          
+            else if (descMap.attrId == "000A") // Image Stamp - R -  
+		    {updateDataValue("ImageStamp", descMap.value)}
+            
+            else if (descMap.attrId == "000B") // Upgrade Activation Policy - R - 
+		    {updateDataValue("UpgradeActivationPolicy", descMap.value)}
+        }  
+**/
+        else if (descMap.cluster == "0020")  // Parse Poll Cluster   Math.round(Float.parseFloat(evt.value))
+        {
+           def reversed = zigbee.swapOctets("$descMap.value")
+           def float isValue = Integer.parseInt(reversed, 16) / 4 // - All Attributes in this cluster use quaterseconds so divide by 4
+
+            if (descMap.attrId == "0000")                       // rw - uint32 - CheckinInterval 
+            {updateDataValue("CheckinInterval", "$isValue seconds")}
+
+            else if (descMap.attrId == "0001")                    // r - uint32 - LongPollInterval
+		    {updateDataValue("LongPollInterval", "$isValue seconds")}
+            
+            else if (descMap.attrId == "0002")                     // r - uint16 - ShortPollInterval
+		    {updateDataValue("ShortPollInterval", "$isValue seconds")}
+            
+            else if (descMap.attrId == "0003")                     // rw - uint16 - FastPollTimeout
+		    {updateDataValue("FastPollTimeout", "$isValue seconds")}
+            
+            else if (descMap.attrId == "0004")                     // r - uint32 - CheckInIntervalMin
+		    {updateDataValue("CheckInIntervalMin", "$isValue seconds")}
+            
+            else if (descMap.attrId == "0005")                     // r - uint32 - LongPollIntervalMin
+		    {updateDataValue("LongPollIntervalMin", "$isValue seconds")}
+            
+            else if (descMap.attrId == "0006")                     // r - uint32 - FastPollTimeoutMax
+		    {updateDataValue("FastPollTimeoutMax", "$isValue seconds")}
+
+        }
+        
+        else if (descMap.cluster == "0201")   // Parse Thermostat Cluster 
+        {    
+            if (descMap.attrId == "0000")     // Local Temperature
+		    {
+			    map.name = "temperature"
+			    if (descMap.value == "8000")  // 0x8000 invalid temperature
+			    {
+				    map.descriptionText = "-- error --"
+			    }			
+                else
+                {
+                    def reversed = zigbee.swapOctets("$descMap.value")
+                    def float celsius = Integer.parseInt(reversed, 16) / 100
+			        map.value = celsius.round(1)
+                    map.unit = "°C"
+                    map.descriptionText = "eTRV measured temperature"
+                    if (infoLogging) log.info "$map.descriptionText $map.value$map.unit" //log change in measured temperature as information 
+                }
+ 		    }
+        
+            else if (descMap.attrId == "0008") // PIHeatingDemand, percentage that the valve is open
+		        {
+			    map.name = "eTRVPIHeatingDemand"
+                // def float piheat = Integer.parseInt(descMap.value,16)
+			    // map.value = piheat.round(1)
+                // test 2 lines above to return as number rounded to one decimal place - could replace next line which returns an integer 
+                map.value = Integer.parseInt(descMap.value,16)
+                
+                map.unit = "%"
+                map.descriptionText = "eTRV valve open, percentage"
+                if (debugLogging) log.debug "PIHeatingDemand: $map.value %, where 0% is closed"
+                }   
+
+		    else if (descMap.cluster == "0201" && descMap.attrId == "0012") // Heating Set Point
+		    {
+			map.name = "heatingSetpoint"
+			    if (descMap.value == "8000")		//0x8000
+			    {
+				    map.descriptionText = "-- error --"
+			    }
+                else
+                {
+                    def reversed = zigbee.swapOctets("$descMap.value")
+                    def float celsius = Integer.parseInt(reversed, 16) / 100
+                    map.value = celsius.round(1)
+                    map.unit = "°C"
+                    map.descriptionText = "eTRV Heating Setpoint"
+                    if (infoLogging) log.info "$map.descriptionText $map.value$map.unit" //log change in heating setpoint as information 
+                }
+            } 
+
+            else if (descMap.attrId == "0015") // User Set Minimum Heat Setpoit Limit, Temperature
+		    {
+			    map.name = "eTRVMinHeatSetpointLimit"
+                def reversed = zigbee.swapOctets("$descMap.value")
+                def float celsius = Integer.parseInt(reversed, 16) / 100
+    	        map.value = celsius.round(1)
+                map.unit = "°C"
+                map.descriptionText = "eTRV Min Heat Setpoint Limit"
+ 		    }
+        
+            else if (descMap.attrId == "0016") // User Set Maximum Heat Setpoit Limit, Temperature
+		    {
+			    map.name = "eTRVMaxHeatSetpointLimit"
+                def reversed = zigbee.swapOctets("$descMap.value")
+                def float celsius = Integer.parseInt(reversed, 16) / 100
+			    map.value = celsius.round(1)
+                map.unit = "°C"
+                map.descriptionText = "eTRV max Heat Setpoint Limit"
+ 		    }
+      
+            else if (descMap.attrId == "001C") // System Mode, only has heating
+		    {
+			/**    map.name = "eTRVSystemMode"
+			    if (descMap.value == "04")
+			    { 
+                    map.name = "thermostatMode"
+                    map.value = "heat"
+                    map.descriptionText = "eTRV System Mode"
+			    }
+			    else
+			    {
+				    if (debugLogging) log.debug "received mode value is: $descMap.value"
+                    map.name = "thermostatMode"
+                    map.value = "error"
+                    map.descriptionText = "thermostatMode / eTRV System Mode - can only be 04, heat not: $descMap.value"
+			    } **/
+		    }
+
+		    else if (descMap.attrId == "0030") // TRV Setpoint Change Source 
+		    {
+			    map.name = "eTRVSetpointSource"
+                map.descriptionText = "eTRV Setpoint Change Source"
+                if (descMap.value == "00") {map.value = "manual"}
+                else if (descMap.value == "01") {map.value = "eTRVSchedule"}
+                else if (descMap.value == "02") {map.value = "software"}                
+                else {if (debugLogging) log.debug "invalid eTRVSetpointSource"}
+            }            
+            
+            
+            else if (descMap.attrId == "4000")   // "eTRVOpenWindowDetected", "enum", ["Quarantine", "Closed", "Imminent", "Open", "Reported"]
+            {
+                map.name = "eTRVOpenWindowDetected"
+                map.descriptionText = "eTRV Open Window Detected"
+			    if (descMap.value == "00") {map.value = "quarantine"}
+			    else if (descMap.value == "01") {map.value = "closed"}
+            	else if (descMap.value == "02") {map.value = "imminent"}
+            	else if (descMap.value == "03") {map.value = "open"}
+            	else if (descMap.value == "04") {map.value = "reported"}
+                else {if (debugLogging) log.debug "invalid eTRVOpenWindowDetected"}                
+            }        
+
+		    else if (descMap.attrId == "4003")  //  attribute "eTRVWindowExtSen", "enum", ["closed", "open"]
+		    {
+			    map.name = "eTRVOpenWindowExtSen"
+                map.descriptionText = "eTRV Open Window External Sensor"
+			    if (descMap.value == "00") {map.value = "closed"}
+			    else if (descMap.value == "01") {map.value = "open"}
+                else {if (debugLogging) log.debug "invalid eTRVOpenWindowExtSen"}
+            }            
+
+            else if (descMap.attrId == "4010") //RW TRV Exercise Day 00 for Sunday to 06 for Saturday, 07 for undefined
+		    {
+			    map.name = "eTRVExerciseDay"
+                map.descriptionText = "eTRV Exercise Day"
+			    if (descMap.value == "00") {map.value = "Sunday"}
+			    else if (descMap.value == "01") {map.value = "Monday" }
+                else if (descMap.value == "02") {map.value = "Tuesday" }
+                else if (descMap.value == "03") {map.value = "Wednesday" }
+                else if (descMap.value == "04") {map.value = "Thursday" }
+                else if (descMap.value == "05") {map.value = "Friday" }
+                else if (descMap.value == "06") {map.value = "Saturday" }
+                else if (descMap.value == "07") {map.value = "undefined" }
+                else {if (debugLogging) log.debug "invalid eTRV Exercise Day value: $descMap.value"}
+            }
+            
+            else if (descMap.attrId == "4011") // TRV Exercise Minutes from midnight   
+		    {
+			    map.name = "eTRVExerciseTime"
+                map.descriptionText = "eTRV Minute after midnight"
+                map.value = ""
+                def String reversed = zigbee.swapOctets("$descMap.value")
+                def int tempInt = Integer.parseInt(reversed, 16)
+                if ((tempInt >= 0) && (tempInt <= 1439)) 
+                    {
+                    def int wholeHours
+                    wholeHours = tempInt.intdiv(60)
+                    def String remainingMinutes
+                    tempInt = (tempInt - (wholeHours * 60))
+                    remainingMinutes = String.format("%02d", tempInt)
+                    if (wholeHours < 12)                       
+                        {map.value = "$wholeHours" + ":" + remainingMinutes + "am"}
+                    else  
+                        {
+                            wholeHours -= 12
+                            map.value = "$wholeHours" + ":" + remainingMinutes + "pm"
+                        }
+                    }
+                else {if (debugLogging) log.debug "invalid TRV Exercise Minute after midnight value: $descMap.value"}
+            }
+               
+            else if (descMap.attrId == "4012") // eTRV Mounting Mode Active: 00 for mounted and 01 for not mounted or factory reset 
+		    {
+			    map.name = "eTRVMountingModeActive"
+                map.descriptionText = "eTRV Moiunting Mode Active"
+			    if (descMap.value == "00") {map.value = "no, mounted"}
+			    else if (descMap.value == "01") {map.value = "yes, not mounted or reset" }
+                else {if (debugLogging) log.debug "invalid TRV Mounting Mode value: $descMap.value"}
+            }
+
+            else if (descMap.attrId == "4013") // eTRV Mounting Mode Control: 00 for Ready for physical mounting on valve, 01 for mounted or as if mounted   
+		    {
+			    map.name = "eTRVMountingModeControl"
+                map.descriptionText = "eTRV orientation"
+			    if (descMap.value == "00") {map.value = "Go to mounting mode"}
+			    else if (descMap.value == "01") {map.value = "Go to Mounted position" }
+                else {if (debugLogging) log.debug "invalid eTRVMountingModeControl value: $descMap.value"}
+            }
+            
+                else if (descMap.attrId == "4014") // eTRV orientation - 0, horizontal and 1, vertical
+		    {
+			    map.name = "eTRVOrientation"
+                map.descriptionText = "eTRV orientation"
+			    if (descMap.value == "00") {map.value = "horizontal"}
+			    else if (descMap.value == "01") {map.value = "vertical" }
+                else {if (debugLogging) log.debug "invalid eTRVOrientation"}
+            }        
+
+		    else if (descMap.attrId == "4015") // External Senor Temperature
+		    {
+                map.name = "eTRVExternalSensorTemperature"
+			    map.unit = "°C"
+                def reversedValue = zigbee.swapOctets("$descMap.value")
+                if (reversedValue == "E0C0")		//reversed octets for signed 16 bit integer -8000
+			    {
+				    map.descriptionText = "eTRV External Sensor Temperature function,disabled"
+                    map.value = -80
+                }
+                else
+                {
+                    map.descriptionText = "eTRV External Sensor Temperature"
+                    def float celsius = Integer.parseInt(reversedValue, 16) / 100
+                    map.value = celsius.round(1)
+                }
+            }         
+/**
+Danfos Specification Notes: For implementing in Apps
+If Radiator Covered Attribute [0x4016] = 'not covered', recommended temperature from external sensor is sent to TRV [0x4015] at least every 3 hours but not more often than every 30 minutes @ every 0,1K change;
+after 3 hours the function is disabled and goes back to standard mode.
+If Radiator Covered Attribute  [0x4016] = 'covered', recommended temperature from external sensor is sent to TRV [0x4015] at least every 30 minutes but not more often than every 5 minutes @ every 0,1K change;
+after 35 minutes the function is disabled and goes back to standard mode. 
+The value -8000 disables the function.
+NB - see note at top regarding TRV failure to read regular updated of External Sensor Temperature
+**/
+
+		    else if (descMap.attrId == "4016") // eTRV Radiator Covered Attribute - 00 for notCovered and 01 for covered
+		    {
+			    map.name = "eTRVRadiatorCovered"
+			    if (descMap.value == "00")
+			    {
+				    map.value = "notCovered"
+                    map.descriptionText = "Radiator Not Covered"
+			    }
+			    else
+			    {
+				    map.value = "covered"
+                    map.descriptionText = "Radiator Covered"
+			    }
+		    }
+        
+            else if (descMap.attrId == "4020") // eTRV Aggression factor
+		    {
+			    map.name = "eTRVAggressionFactor"
+                int temp = Integer.parseInt(descMap.value,16);
+                if (temp >=17) {
+                    temp -= 16
+                    sendEvent(name: "eTRVFastResponse", value: "yes", descriptionText: "eTRVFastResponse is - yes")
+                    }
+                else {sendEvent(name: "eTRVFastResponse", value: "no", descriptionText: "eTRVFastResponse is - no")}
+                map.value = temp
+                map.descriptionText = "eTRVAggressionFactor, scale 1 to 10, but see also eTRVFastResponse"
+                if (debugLogging) log.debug "eTRVAggressionFactor: $map.value where 1 is fast and default"
+            }
+ 
+            else if (descMap.attrId == "4030") // eTRV Heat Available  00 for no and 01 for yes
+		    {
+			    map.name = "eTRVHeatAvailable"
+                map.descriptionText = "eTRV Heat Available"
+			    if (descMap.value == "00") {map.value = "no"}
+			    else if (descMap.value == "01") {map.value = "yes"}
+                else {if (debugLogging) log.debug "invalid eTRVHeatAvailable"}  
+		    } 
+        
+		    else if (descMap.attrId == "4031") // eTRV Calling for heat - 00 for no and 01 for yes
+		    {
+			    map.name = "eTRVCallingForHeat"
+                map.descriptionText = "eTRV Calling for heat"
+			    if (descMap.value == "00") {map.value = "no"}
+			    else if (descMap.value == "01") {map.value = "yes"}
+                else {if (debugLogging) log.debug "invalid eTRVCallingForHeat"}  
+		    }   
+
+		    else if (descMap.attrId == "4032") // TRV Load Balancing Enabled:  00 disabled (radiator acts alone); 01 default on     
+		    {
+			    map.name = "eTRVLoadSharing"
+                map.descriptionText = "eTRV Load Sharing"
+			    if (descMap.value == "00") {map.value = "off"}
+			    else if (descMap.value == "01") {map.value = "on"}
+                else {if (debugLogging) log.debug "invalid Load Balancing Enabled value: $descMap.value"}
+            }
+         
+		    else if (descMap.attrId == "4040") // TRV Load Radiator Mean  
+		    {
+			    map.name = "eTRVLoadRadiatorMean"
+                map.descriptionText = "eTRV Load Radiator Mean"
+			    map.value = zigbee.swapOctets(descMap.value)
+                if (map.value == "E0C0") {map.value = "not set"}
+            }            
+
+		    else if (descMap.attrId == "404A") // TRV Load Estimate for this radiator
+		    {
+			    map.name = "eTRVLoadEstimate"
+                map.descriptionText = "eTRV Load Estimate"
+			    map.value = zigbee.swapOctets(descMap.value)
+                // if (map.value == "E0C0") {map.value = "not set"}
+            }
+
+		    else if (descMap.attrId == "404B") // TRV Regulation Off-set -in steps of 0.1°C: range –2.5 °C to +2.5 °C (0xE7 … 0x19).  
+		        {
+                if (descMap.value != null)
+                    {
+                    map.name = "eTRVRegulationOffset"
+                    map.descriptionText = "eTRV Regulation Offset"
+                    map.units = "°C"
+                    def int tempInteger = zigbee.convertHexToInt(descMap.value)
+                    if (tempInteger > 127) { tempInteger = ((tempInteger - 256))}
+                    def float tempFloat = tempInteger
+                    tempFloat /= 10 
+                    if ((tempFloat >= -2.5) && (tempFloat <=2.5)) {map.value = tempFloat}
+                    else {map.value = -80}
+                    }
+               }
+
+		    else if (descMap.attrId == "404C") // TRV Adaptation Run Control: default 00, 01 for initiate; 02 for cancel
+		    {
+			    map.name = "eTRVAdaptionRunControl"
+                map.descriptionText = "eTRV Adaptation Run Control"
+			    if (descMap.value == "00") {map.value = "inactive"}
+			    else if (descMap.value == "01") {map.value = "initiate"}
+                else if (descMap.value == "02") {map.value = "cancel"} 
+                else {if (debugLogging) log.debug "invalid Adaptation Run Control value: $descMap.value"}
+            }
+
+		    else if (descMap.attrId == "404D") // TRV Adaptation Run Status: bit 0 in progress, bit 1 Valve Characteristic found, bit 2 Valve Characteristic lost
+		    {
+                map.name = "eTRVAdaptationRunStatus"
+                map.descriptionText = "eTRV Adaptation Run Status"
+                map.value = " $descMap.value"
+			    if ((descMap.value == "01") ||(descMap.value == "03") || (descMap.value == "05") || (descMap.value == "07"))  {map.value = map.value +", progessing"}
+                else {map.value = map.value + ", inactive"}
+                if ((descMap.value == "02") ||  (descMap.value == "03"))    {map.value = map.value + ", ch. found"}
+                else if ((descMap.value == "04") || (descMap.value == "05"))  {map.value = map.value + ", ch. lost"} 
+                else {if (debugLogging) log.debug "invalid Adaptation Run Status: $descMap.value"}
+            }
+   
+		    else if (descMap.attrId == "404E") // TRV Adaptation Run Settings: 00 default; 01 for enabled automatic
+		    {
+			    map.name = "eTRVAdaptationRunSetting"
+                map.descriptionText = "eTRV Adaptation Run Setting"
+			    if (descMap.value == "00") {map.value = "manual"}
+			    else if (descMap.value == "01") {map.value = "automatic"}
+                else {if (debugLogging) log.debug "invalid Adaptation Run Setting: $descMap.value"}
+            }
+
+		    else if (descMap.attrId == "404F") // TRV Preheat Status: 00 for off, 01 for on (default) - reportable
+		    {
+			    map.name = "eTRVPreheatStatus"
+                map.descriptionText = "eTRV Preheat Status"
+			    if (descMap.value == "00") {map.value = "off"}
+			    else if (descMap.value == "01") {map.value = "on"}
+                else {if (debugLogging) log.debug "invalid eTRV Preheat Status: $descMap.value"}
+            }
+
+		    else if (descMap.attrId == "4050") // TRV Preheat Time: Time Stamp, default 00000000, max FFFFFFFF - reportable 
+		    {
+			    map.name = "eTRVPreheatTime"
+                map.descriptionText = "eTRV Preheat Time"
+			    map.value = descMap.value
+            }
+
+            else if (descMap.attrId == "4051") // eTRV Window Open Feature - 00 for off and 01 for on
+		    {
+			    map.name = "eTRVOpenWindowFeature"
+                map.descriptionText = "eTRV Open Window Feature On/Off"
+			    if (descMap.value == "00")
+			    {
+				    map.value = "off"
+			    }
+			    else
+			    {
+				    map.value = "on"
+			    }
+		    }  
+            
+        }
+        
+		else if (descMap.cluster == "0204")   // Parse Thermostat Display Cluster
+        {        
+            if (descMap.attrId == "0001") // eTRV child lock state, 00, unlocked 01 to 05 locked
+		    {
+			    map.name = "eTRVLockState"
+			    if (descMap.value == "00")
+			    {
+				    map.value = "unlocked"
+				    map.descriptionText = "eTRV Child Lock State: unlocked, $descMap.value"
+			    }
+			    else if ((descMap.value == "01") || (descMap.value == "02") || (descMap.value == "03") || (descMap.value == "04") || (descMap.value == "05"))
+			    {
+				    map.value = "locked"
+                    map.descriptionText = "eTRV Child Lock State: locked, $descMap.value"
+			    }
+			    else 
+                {
+	            if (debugLogging) log.debug "invalid lock value $descMap.value"   
+                }
+		    }
+		
+		
+		   else if (descMap.attrId == "4000") // eTRV Viewing Direction, 0 for normal, 1 for inverted
+		   {
+			    map.name = "eTRVViewingDirection"
+            	map.descriptionText = "eTRV Viewing Direction"
+			    if (descMap.value == "00")
+			    {
+				    map.value = "normal"
+			    }
+			    else
+			    {
+				    map.value = "inverted"
+                    map.descriptionText = "eTRV Viewing Direction: 1, inverted"
+			    }
+		    } 
+        }
+
+       else if (descMap.cluster == "0B05")   // Parse Diagnostic Cluster
+       {
+          if (descMap.attrId == "4000") // eTRV error state attribute
+		  {
+              map.name = "eTRVErrorFlags"
+
+		    if (descMap.value != null)
+              {
+                def int errorValue = zigbee.convertHexToInt(descMap.value)
+                def codes = []                
+                def int errormask = 0b1
+                if (errorValue & errormask) {codes += "E1"}    //E1 - Top PCB sensor error - Device faulty
+                errormask = 0b10
+                if (errorValue & errormask) {codes += "E2"}    //E2 - Side PCB sensor error - Device faulty
+                errormask = 0b100
+                if (errorValue & errormask) {codes += "E3"}	   //E3 - NVM error - Device faulty	    
+                errormask = 0b1000
+                if (errorValue & errormask) {codes += "E4"}    //E4 - UnknownHW error - Device faulty
+                errormask = 0b10000
+                if (errorValue & errormask) {codes += "E5"}    //E5 - N/A - N/A
+                errormask = 0b100000
+                if (errorValue & errormask) {codes += "E6"}    //E6 - Motor error - Motor jammed, try re-start, try reboot, try re-mount, if the error persists the device is faulty
+                errormask = 0b1000000
+                if (errorValue & errormask) {codes += "E7"}    //E7 - N/A - N/A
+                errormask = 0b10000000
+                if (errorValue & errormask) {codes += "E8"}    //E8 - Invalid communication - Invalid internal communication, try reboot 
+                                                               //(re insert batteries), if the error persists the device is faulty (if not persistent, the error should disappear after 10 minutes)
+                errormask = 0b100000000
+                if (errorValue & errormask) {codes += "E9"}    //E9 - N/A - N/A
+                errormask = 0b1000000000
+                if (errorValue & errormask) {codes += "E10"}   //E10 - Invalid clock information (need resynchronization) - You have recently replaced battery and lost time synchronization.
+                errormask = 0b10000000000
+                if (errorValue & errormask) {codes += "E11"}    //E11 - N/A - N/A
+                errormask = 0b100000000000
+                if (errorValue & errormask) {codes += "E12"}    //E12 - Radio communicationerror - Communication with GW lost (will be active for 2 minutes after re-connection for collecting diagnostic if needed)
+                errormask = 0b1000000000000
+                if (errorValue & errormask) {codes += "E13"}    //E13 - Encoder Jammed - N/A
+                errormask = 0b10000000000000
+                if (errorValue & errormask) 
+                  {
+                    codes += "E14"    //E14 - Low Battery - Low Battery, the device will soon run out of batteries, replace ASAP
+                    sendEvent (name: "eTRVBatteryWarning", value: "low", descriptionText: "low battery error code recieved, change batteries asap")      
+                  }
+                errormask = 0b100000000000000
+                if (errorValue & errormask) 
+                  {
+                    codes += "E15"    //E15 - Critical Low Battery - Batteries Empty, Replace immediately,
+                                                                //The eTRVcannot control the valve longer and has opened the valve to prevent potential frost damages to the system
+                    sendEvent (name: "eTRVBatteryWarning", value: "critical", descriptionText: "low battery error code recieved, change batteries immediately") 
+                  }
+				map.value = codes
+                if (infoLogging) log.info "error codes: $codes"
+                state.LastErrorFlagsReport = new Date().format("dd/MMM/yyyy HH:mm:ss")
+            }
+          else
+            {
+              map.value = "none"
+            if (infoLogging) log.info "null returned as error value $descMap.value"  
+            }
+            map.descriptionText = "eTRVErrorFlags, $descMap.value"
+		  }
+       
+       }
+       
+	    def result = null
+	    if (map) 
+            {
+            if (debugLogging) log.debug "Parse returned $map"
+            sendEvent(name: map.name, value: map.value , unit: map.unit, descriptionText: map.descriptionText)
+            }
+        
+        if (map.name =="eTRVLoadEstimate")
+        {
+            def int eTRVLoadEstimateDecimal = zigbee.convertHexToInt(map.value)
+            if ((eTRVLoadEstimateDecimal < 0) || (eTRVLoadEstimateDecimal >3600)) {eTRVLoadEstimateDecimal = 0}
+            def float eTRVLoadEstimatePercent = eTRVLoadEstimateDecimal / 36                            // 0 - 3600, 0 - 100%  0 if out of range
+            sendEvent(name:"eTRVLoadEstimatePercent", value: eTRVLoadEstimatePercent, descriptionText: "Percent value of eTRVLoadEstimate string (hex)")
+        }
+             
+        if (OperatingStateByUser == false)
+        {
+            if (device.currentValue("thermostatMode") == "heat")
+          {
+            if ((device.currentValue("eTRVCallingForHeat") == "yes") && (device.currentValue("eTRVPIHeatingDemand") > 1))
+             {
+             sendEvent(name: "thermostatOperatingState", value: "heating", descriptionText: "for dashboard thermostat tile colour only ")  //  ["heating", "pending cool", "pending heat", "vent economizer", "idle", "cooling", "fan only"]
+             }
+           else 
+             {
+             sendEvent(name: "thermostatOperatingState", value: "idle", descriptionText: "for dashboard thermostat tile colour only")      //  ["heating", "pending cool", "pending heat", "vent economizer", "idle", "cooling", "fan only"]
+             }
+          }
+        if (device.currentValue("thermostatMode") == "off")
+          {
+              if (debugLogging) log.debug "Parse noticed that thermostatMode is off"
+              sendEvent(name: "thermostatOperatingState", value: "idle", descriptionText: "for dashboard thermostat tile colour only")      //if thermostatMode is off, thermostatOperatingState is set to idle 
+          }
+        }
+
+	    return
+    }
+}  
+//End Of Parse Method
+    
+def parseDescriptionAsMap(description) {
+	(description - "read attr - ").split(",").inject([:]) { map, param ->
+		def nameAndValue = param.split(":")
+		map += [(nameAndValue[0].trim()):nameAndValue[1].trim()]
+	}
+}
+
+// irrelevant mandatory thermostat command methods
+def auto() {}
+def cool() {}
+def emergencyHeat() {}
+def fanAuto() {}
+def fanCirculate() {}
+def fanOn() {}
+def setCoolingSetpoint(temperature) {}
+
+def setThermostatFanMode(fanmode) 
+    {
+        sendEvent(name: "thermostatFanMode", value: "auto", descriptionText: "Only has no fan")  
+        return
+    }
+    
+
+/**  def setThermostatMode(thermostatmode) 
+{
+    if (debugLogging) log.debug "setThermostatMode method called"
+    if (thermostatmode == "off")
+       {sendEvent(name: "thermostatMode", value: "off", descriptionText: "Only has heat or simulated off mode")}
+    else
+        {sendEvent(name: "thermostatMode", value: "heat", descriptionText: "Only has heat or simulated off mode")} 
+    return
+}
+**/
+
+def setThermostatMode(thermostatmode){  // eTRV only has 'Heat' mode but simulates an Off this adjusts the heatingSetpoint to the eTRVMinHeatingSetpointLimit - On or Heat does not itself change the setpoint
+    if (thermostatmode == "off")  {off()}
+    else {heat()}                             
+    return
+}
+
+
+def heat() {
+    if (debugLogging) log.debug "heat method called"
+    sendEvent(name: "thermostatMode", value: "heat", descriptionText: "thermostatmode set to heat() by heat command")
+}  
+
+//  from Switch capability
+def off() {
+    if (debugLogging) log.debug "off method called"    
+    float offSetpoint = device.currentValue("eTRVMinHeatSetpointLimit")
+    if (debugLogging) log.debug "about to send offSetpoint as: $offSetpoint" 
+    setHeatingSetpoint(offSetpoint)     //thermostatmode will be set to off and setpoint to min permitted
+}
+
+def on() {
+    if (debugLogging) log.debug "on method called"
+    sendEvent(name: "thermostatMode", value: "heat", descriptionText: "thermostatmode set to heat by On() command")
+}
+    
+def setThermostatOperatingState(state){
+    if (OperatingStateByUser == true)
+    {
+        if (state == "heating")
+        {
+        sendEvent(name: "thermostatOperatingState", value: "heating", descriptionText: "for dashboard thermostat tile colour only ")  //  ["heating", "pending cool", "pending heat", "vent economizer", "idle", "cooling", "fan only"]
+        }
+        if (state == "idle")
+        {
+        sendEvent(name: "thermostatOperatingState", value: "idle", descriptionText: "for dashboard thermostat tile colour only ")  //  ["heating", "pending cool", "pending heat", "vent economizer", "idle", "cooling", "fan only"]
+        }
+    }
+}
+                                                  
+/**
+The next two methods are now superseded by use of the zigbee.command based method, immediately below
+
+def setHeatingSetpoint(degrees) {
+   	float maxSetpoint = device.currentValue("eTRVMaxHeatSetpointLimit")
+   	float minSetpoint = device.currentValue("eTRVMinHeatSetpointLimit")    
+    if ((degrees != null) && (degrees <= maxSetpoint) && (degrees >= minSetpoint))
+    {
+        int zigbeeTemp;
+		zigbeeTemp = (Math.round(degrees * 100))
+            if (infoLogging) log.info "setHeatingSetpoint ${zigbeeTemp / 100} celsius"
+		def cmds =
+			zigbee.writeAttribute(0x201, 0x12, 0x29, zigbeeTemp) +  //write Heating Setpoint
+			zigbee.readAttribute(0x201, 0x12)	//read Heating Setpoint
+		return cmds
+	}
+    else
+    {
+        if (infoLogging) log.info "proposed setpoint is outside permitted limits or is null"
+    }
+}
+**/
+/**
+def setHeatingSetpoint(degrees) {
+   	float maxSetpoint = device.currentValue("eTRVMaxHeatSetpointLimit")
+   	float minSetpoint = device.currentValue("eTRVMinHeatSetpointLimit")    
+    if ((degrees != null) && (degrees <= maxSetpoint) && (degrees >= minSetpoint))
+    {
+        def String commandSpeed = "01"  // 00 slow, 01 fast
+        int zigbeeTemp
+		zigbeeTemp = (Math.round(degrees * 100))
+            if (infoLogging) log.info "setHeatingSetpoint ${zigbeeTemp / 100} celsius; command speed : $commandSpeed"
+        def String payloadTemp = zigbee.convertToHexString(zigbeeTemp,4)
+        payloadTemp = zigbee.swapOctets(payloadTemp)
+        
+        def String payload = commandSpeed+" $payloadTemp"
+
+        if (debugLogging) log.debug "my payload is: $payload"
+
+		def cmds =
+            zigbee.command(0x201, 0x40, ["mfgCode": 0x1246], 2000, payload) +  //write using cluster command - 2000 is a 2second delay
+			zigbee.readAttribute(0x201, 0x12)	//read Heating Setpoint
+                if (debugLogging) log.debug "my command is: $cmds"
+		return cmds
+	}
+    else
+    {
+        if (infoLogging) log.info "proposed setpoint is outside permitted limits or is null"
+    }
+}
+**/
+
+def setTRVFastResponse(setting){
+    if (setting == "yes"){sendEvent(name: "eTRVFastResponse", value: "yes", descriptionText: "eTRVFastResponse is - yes -from next change in heating setPoint")}
+    else {sendEvent(name: "eTRVFastResponse", value: "no", descriptionText: "eTRVFastResponse is - no - from next change in heating setPoint")}
+}
+
+def setTRVAggressionFactor(setting) {
+    if ((setting >= 1) && (setting <=10)) // 1 (fast) to 10 (slow)
+    {
+    short tempSetting = (Math.round(setting))
+    if (device.currentValue("eTRVFastResponse") == "yes") {tempSetting += 16}
+    if (infoLogging) log.info "setTRVAggressionFactor: $tempSetting"
+		def cmds =
+		    zigbee.writeAttribute(0x201, 0x4020, 0x20, tempSetting, [mfgCode:0x1246], 0) +   //write eTRVAggressionFactor
+			zigbee.readAttribute(0x201, 0x4020, [mfgCode:0x1246])	//  read eTRVAggressionFactor
+		return cmds
+     }
+     else if (infoLogging) log.info "invalid aggression factor"   
+}
+
+def setHeatingSetpoint(degrees) {
+   	float maxSetpoint = device.currentValue("eTRVMaxHeatSetpointLimit")
+   	float minSetpoint = device.currentValue("eTRVMinHeatSetpointLimit")    
+    def String commandSpeed = "00"  // 00 slow
+    if (device.currentValue("eTRVFastResponse") == "yes") {commandSpeed = "01"} // 01 fast
+    if (degrees != null)
+    {
+        if (degrees < minSetpoint) 
+            {
+                degrees = minSetpoint
+                if (infoLogging) log.info "proposed setpoint was below permitted limits - so eTRVMinSetpoint used"
+            }
+        if (degrees > maxSetpoint) 
+            {
+                degrees = maxSetpoint
+                if (infoLogging) log.info "proposed setpoint was above permitted limits - so eTRVMaxSetpoint used"
+            }
+            
+        if (degrees == minSetpoint)
+           {
+           sendEvent(name: "thermostatMode", value: "off", descriptionText: "Automatically set thermostatmode to off because setpoint equals min permitted") // ["auto", "off", "heat", "emergency heat", "cool"]
+           }
+       else
+           {
+           sendEvent(name: "thermostatMode", value: "heat", descriptionText: "Automatically set thermostatmode to heat becayse setpoint greater than min permitted") // ["auto", "off", "heat", "emergency heat", "cool"]
+           }
+        
+        if (debugLogging) log.debug "about to set degrees as: $degrees"        
+        int zigbeeTemp
+		zigbeeTemp = (Math.round(degrees * 100))
+            if (infoLogging) log.info "setHeatingSetpoint ${zigbeeTemp / 100} celsius; command speed : $commandSpeed"
+        def String payloadTemp = zigbee.convertToHexString(zigbeeTemp,4)
+        payloadTemp = zigbee.swapOctets(payloadTemp)
+        
+        def String payload = commandSpeed+" $payloadTemp"
+
+        if (debugLogging) log.debug "my payload is: $payload"
+
+		def cmds =
+            zigbee.command(0x201, 0x40, ["mfgCode": 0x1246], 2000, payload) +  //write using cluster command - 2000 is a 2second delay
+			zigbee.readAttribute(0x201, 0x12)	//read Heating Setpoint
+                if (debugLogging) log.debug " asked to set and read heatingSetpoint - my command is: $cmds"
+		return cmds
+	}
+    else
+    {
+        if (infoLogging) log.info "proposed setpoint is null or invalid: $degrees"
+        		def cmds =
+    			zigbee.readAttribute(0x201, 0x12)	//read Heating Setpoint
+                if (debugLogging) log.debug " asked to read heatingSetpoint - my command is: $cmds"
+		return cmds
+    }
+    return
+}
+
+def increaseHeatSetpoint() {
+ 	float currentSetpoint = device.currentValue("heatingSetpoint")
+    if (debugLogging) log.debug "currentSetpoint = $currentSetpoint"
+   	float maxSetpoint = device.currentValue("eTRVMaxHeatSetpointLimit")
+        if (debugLogging) log.debug "maxSetpoint = $maxSetpoint"
+   	float step = 1
+	if (currentSetpoint <= (maxSetpoint - step))
+	{
+		currentSetpoint = currentSetpoint + step
+		setHeatingSetpoint(currentSetpoint)
+        /** Alternative for last two lines, using cluster command
+            def String payload = "00 0A" // adjust heating setpoint +1 degrees '0A' is ten tenths of a degree, could do '05'
+            def cmds =
+                zigbee.command(0x201, 0x00, [:], 0, payload) +  //write using cluster command
+		        zigbee.readAttribute(0x201, 0x12)	//read Heating Setpoint
+            if (debugLogging) log.debug "my command is: $cmds"
+	        return cmds
+        **/
+	}
+    else
+    {
+        if (infoLogging) log.info "eTRVMaxHeatSetpointLimit limit reached"
+    }
+}
+
+def decreaseHeatSetpoint() {
+    float currentSetpoint = device.currentValue("heatingSetpoint")
+    if (debugLogging) log.debug "currentSetpoint = $currentSetpoint"
+   	float minSetpoint = device.currentValue("eTRVMinHeatSetpointLimit")
+        if (debugLogging) log.debug "minSetpoint = $minSetpoint"
+	float step = 1
+   	if (currentSetpoint >= (minSetpoint + step))
+   	{
+		currentSetpoint = currentSetpoint - step
+		setHeatingSetpoint(currentSetpoint)
+        /** Alternative for last two lines, using cluster command
+        def String payload = "00 F6"  // adjust heating setpoint +1 degrees 'F6' is negative ten tenths of a degree, could do 'FB' for -0.5
+        def cmds =
+            zigbee.command(0x201, 0x00, [:], 0, payload) +  //write using cluster command
+		    zigbee.readAttribute(0x201, 0x12)	//read Heating Setpoint
+        if (debugLogging) log.debug "my command is: $cmds"
+	    return cmds
+        **/
+   	}
+    else
+    {
+        if (infoLogging) log.info "eTRVMinHeatSetpointLimit limit reached"
+    }
+}
+
+def setTRVMinHeatSetpointLimit(degrees) {
+   	float maxSetpoint = device.currentValue("eTRVMaxHeatSetpointLimit")
+	if ((degrees != null) && (degrees < maxSetpoint))
+    {
+        if (degrees <5)
+        {
+            degrees = 5
+            if (infoLogging) log.info "value below eTRVMinHeatSetpointLimit so eTRVMinHeatSetpointLimit used $eTRVMinHeatSetpointLimit celsius"
+        }
+        
+        float currentSetpoint = device.currentValue("heatingSetpoint")
+        if (debugLogging) log.debug "current heatingSetpoint = $currentSetpoint and degrees = $degrees"
+        
+        def cmds = []
+
+        if (currentSetpoint < degrees)  
+        {
+            int zigbeeTempDegrees
+		    zigbeeTempDegrees = (Math.round(degrees * 100))
+            if (infoLogging) log.info "moved heatingSetPoint to new minimum setpoint ${zigbeeTempDegrees / 100} celsius"
+            cmds +=
+                zigbee.writeAttribute(0x201, 0x12, 0x29, zigbeeTempDegrees) +  //write Heating Setpoint
+			    zigbee.readAttribute(0x201, 0x12)	
+        } // makes sure that the heating set point is not left below the new minimum set point
+        
+        int zigbeeTempNewMin
+		zigbeeTempNewMin = (Math.round(degrees * 100))
+        if (infoLogging) log.info "eTRVMinHeatSetpointLimit ${zigbeeTempNewMin / 100} celsius"
+
+		cmds +=
+		    zigbee.writeAttribute(0x201, 0x0015, 0x29, zigbeeTempNewMin) +  //write Min Heat Setpoint Limit
+			zigbee.readAttribute(0x201, 0x0015)	//  Min Heat Setpoint Limit
+		return cmds
+     }
+    else {if (infoLogging) log.info "invalid value for eTRVMinHeatSetpointLimit"}
+}
+
+def setTRVMaxHeatSetpointLimit(degrees) {
+   	float minSetpoint = device.currentValue("eTRVMinHeatSetpointLimit")
+	if ((degrees != null) && (degrees > minSetpoint))
+    {
+        if (degrees >35)
+        {
+            degrees = 35
+            if (infoLogging) log.info "value above eTRVMaxHeatSetpointLimit so eTRVMaxHeatSetpointLimit used $eTRVMaxHeatSetpointLimit celsius"
+        } 
+        float currentSetpoint = device.currentValue("heatingSetpoint")
+        if (debugLogging) log.debug "currentSetpoint = $currentSetpoint"
+        
+        def cmds = []
+
+        if (currentSetpoint > degrees)  
+        {
+            int zigbeeTempDegrees
+		    zigbeeTempDegrees = (Math.round(degrees * 100))
+            if (infoLogging) log.info "moved heatingSetPoint to new maximum setpoint ${zigbeeTempDegrees / 100} celsius"
+            cmds +=
+                zigbee.writeAttribute(0x201, 0x12, 0x29, zigbeeTempDegrees) +  //write Heating Setpoint
+			    zigbee.readAttribute(0x201, 0x12)	
+        } // makes sure that the heating set point is not left above the new maximum set point
+                
+        int zigbeeTempNewMax
+		zigbeeTempNewMax = (Math.round(degrees * 100))
+        if (infoLogging) log.info "eTRVMaxHeatSetpointLimit ${zigbeeTempNewMax / 100} celsius"
+		cmds +=        
+		    zigbee.writeAttribute(0x201, 0x0016, 0x29, zigbeeTempNewMax) +  //write Max Heat Setpoint Limit
+		    zigbee.readAttribute(0x201, 0x0016)	//  Max Heat Setpoint Limit
+		return cmds
+	}
+    else {if (infoLogging) log.info "invalid value for eTRVMaxHeatSetpointLimit"}    
+}
+
+def setOpenWindowExtSensor(settingValue) {
+    def int newSetting = 0
+    if (settingValue == "closed") {newOpenWindowFeatureSetting = 0}   // 0 for closed
+    else if (settingValue == "open") {newOpenWindowFeatureSetting = 1}   // 1 for open
+    def cmds =
+			zigbee.writeAttribute(0x201, 0x4003, 0x10, newOpenWindowFeatureSetting, [mfgCode:0x1246], 0) +  // write Open Window External Sensor setting
+			zigbee.readAttribute(0x0201, 0x4003, [mfgCode:0x1246])	//read Open Window External Sensor state
+    return cmds
+}
+
+def setExerciseDay(settingValue) {
+    def int newSetting = 0
+    if (settingValue == "Sunday") {newSetting = 00}   
+    else if (settingValue == "Monday") {newSetting = 01}   
+    else if (settingValue == "Tuesday") {newSetting = 02}   
+    else if (settingValue == "Wednesday") {newSetting = 03}   
+    else if (settingValue == "Thursday") {newSetting = 04}   
+    else if (settingValue == "Friday") {newSetting = 05}   
+    else if (settingValue == "Saturday") {newSetting = 06}   
+    else if (settingValue == "undefined") {newSetting = 07}
+    else {return}
+    def cmds =
+			zigbee.writeAttribute(0x201, 0x4010, 0x30, newSetting, [mfgCode:0x1246], 0) +  // write TRV Exercise Day
+			zigbee.readAttribute(0x0201, 0x4010, [mfgCode:0x1246])	//read TRV Exercise Day
+    return cmds    
+}
+
+def setExerciseTime(settingValue) {
+
+    if ((settingValue != null) && (settingValue >= 0000) && (settingValue <=1439))  
+    { 
+        short zigbeeTemp;
+		zigbeeTemp = (Math.round(settingValue))
+        if (debugLogging) log.debug "exercise minute zigbeeTemp: $zigbeeTemp"
+        def cmds =
+		    zigbee.writeAttribute(0x201, 0x4011, 0x21, zigbeeTemp, [mfgCode:0x1246], 0) +  // write Exercise Minute after midnight
+			zigbee.readAttribute(0x0201, 0x4011, [mfgCode:0x1246])	//read TRV Exercise Minute
+    return cmds
+    }   
+    else {if (debugLogging) log.debug "invalid Exercise Minute value: $settingValue"}
+} 
+
+def setMountingModeControl(settingValue) {
+    def int newSetting = 0
+    if (settingValue == "Go to mounting mode") {newSetting = 0}   // 0 for "ready to mount"
+    else if (settingValue == "Go to Mounted position") {newSetting = 1}   // 1 for "mounted or as if mounted"
+    def cmds =
+			zigbee.writeAttribute(0x201, 0x4013, 0x10, newSetting, [mfgCode:0x1246], 0) +  // write RV Mounting Mode Control value
+			zigbee.readAttribute(0x0201, 0x4013, [mfgCode:0x1246])	//read RV Mounting Mode Control
+    return cmds
+}
+
+def changeTRVOrientation() {
+    def String currentOrientation = device.currentValue("eTRVOrientation")
+    def int newOrientationCode = 0
+    if (currentOrientation == "vertical")
+    {    currentOrientation = "horizontal"
+         newOrientationCode = 0             // 0 for horizontal
+    }
+    else 
+     {   currentOrientation = "vertical"
+         newOrientationCode = 1            // 1 for vertical
+     }
+    def cmds =
+			zigbee.writeAttribute(0x201, 0x4014, 0x10, newOrientationCode, [mfgCode:0x1246], 0) +  // write new orientation to TRV
+			zigbee.readAttribute(0x0201, 0x4014, [mfgCode:0x1246])	//read TRV Orientation 
+    return cmds
+}
+
+def setExternalSensorTemperature(degrees) {
+	if (degrees != null) {
+		int zigbeeTemp = (Math.round(degrees * 100))
+        if (infoLogging) log.info "setExternalSensorTemperature ${zigbeeTemp/100} celsius"
+		//def celsius = zigbeeTemp /100
+		def cmds =
+			zigbee.writeAttribute(0x201, 0x4015, 0x29, zigbeeTemp, [mfgCode:0x1246], 2000) +
+			zigbee.readAttribute(0x201, 0x4015, [mfgCode:0x1246])	//Read eTRVExternalSensorTemperature
+		return cmds
+	}
+}
+
+def changeTRVRadiatorCovered() {
+    def String currentCoveredState = device.currentValue("eTRVRadiatorCovered")
+    def int newCoveredStateCode = 0
+    if (currentCoveredState == "covered")
+    {    currentCoveredState = "notCovered"
+         newCoveredStateCode = 0         // 0 for notCovered
+    }
+    else
+     {   currentCoveredState = "covered"
+         newCoveredStateCode = 1        // 1 for covered
+     }
+    def cmds =
+			zigbee.writeAttribute(0x201, 0x4016, 0x10, newCoveredStateCode, [mfgCode:0x1246], 0) +  // write new radiator covered attribute
+			zigbee.readAttribute(0x0201, 0x4016, [mfgCode:0x1246])	//read radiator covered attribute
+    return cmds
+}
+
+def setLoadSharing(settingValue) {
+    def int newLoadSharingSetting = 0
+    if (settingValue == "off") {newLoadSharingSetting = 0}   // 0 for off
+    else if (settingValue == "on") {newLoadSharingSetting = 1}   // 1 for on
+    def cmds =
+			zigbee.writeAttribute(0x201, 0x4032, 0x10, newLoadSharingSetting, [mfgCode:0x1246], 0) +  // write new Load Sharing Setting
+			zigbee.readAttribute(0x0201, 0x4032, [mfgCode:0x1246])	//read Load Sharing Setting
+    return cmds
+}
+
+def setRegulationOffset(enteredValue)
+{
+    float tempFloat = enteredValue
+    if (tempFloat != null)
+    {
+        if (tempFloat < -2.5) 
+            {
+            tempFloat = -2.5
+            if (infoLogging) log.info "invalid regulation out of range, set to -2.5"
+            }
+        if (tempFloat > 2.5)
+            {
+            tempFloat = 2.5
+            if (infoLogging) log.info "invalid regulation out of range, set to 2.5"
+            }
+    tempFloat *= 10
+    def int tempInteger
+    tempInteger = Math.rint(tempFloat)
+    def cmds =
+			zigbee.writeAttribute(0x201, 0x404B, 0x28, tempInteger, [mfgCode:0x1246], 0) +  // write regulation offset
+			zigbee.readAttribute(0x0201, 0x404B, [mfgCode:0x1246])	//read regulation offset
+    return cmds  
+    }
+    else if (infoLogging) log.info "invalid regulation offset"
+}
+
+def setAdaptionRun(controlValue) {
+    def int newAdaptionRunCode = 0
+    if (controlValue == "inactive") {newAdaptionRunCode = 0}   // 0 for inactive
+    else if (controlValue == "initiate") {newAdaptionRunCode = 1}   // 1 for initiate
+    else if (controlValue == "cancel") {newAdaptionRunCode = 2}   // 2 for cancel
+    def cmds =
+			zigbee.writeAttribute(0x201, 0x404C, 0x30, newAdaptionRunCode, [mfgCode:0x1246], 0) +  // write new Adaption Run Code
+			zigbee.readAttribute(0x0201, 0x404C, [mfgCode:0x1246])	//read Adaption Run Code
+    return cmds
+}
+
+def setAdaptionRunSetting(settingValue) {
+    def int newAdaptionRunSetting = 0
+    if (settingValue == "manual") {newAdaptionRunSetting = 0}   // 0 for manual
+    else if (settingValue == "automatic") {newAdaptionRunSetting = 1}   // 1 for automatic, during the night
+    def cmds =
+			zigbee.writeAttribute(0x201, 0x404E, 0x18, newAdaptionRunSetting, [mfgCode:0x1246], 0) +  // write new Adaption Run Code
+			zigbee.readAttribute(0x0201, 0x404E, [mfgCode:0x1246])	//read Adaption Run Code
+    return cmds
+}
+
+def changeTRVViewingDirection()   
+{
+    def String currentViewingDirection = device.currentValue("eTRVViewingDirection")
+    def int newViewingDirectionCode = 0
+    if (currentViewingDirection == "inverted")
+    {    currentViewingDirection = "normal"
+         newViewingDirectionCode = 0        // 0 for normal
+    }
+    else
+     {   currentViewingDirection = "normal"
+         newViewingDirectionCode = 1        // for inverted
+     }
+    def cmds =
+			zigbee.writeAttribute(0x204, 0x4000, 0x30, newViewingDirectionCode, [mfgCode:0x1246], 0) +  // write new TRV Display Viewing Direction attribute
+			zigbee.readAttribute(0x0204, 0x4000, [mfgCode:0x1246])	//read TRV Display Viewing Direction
+    return cmds
+}
+
+def setTRVHeatAvailable(selectedState)   
+{
+    def int newHeatAvailableCode = 0
+    if (selectedState == "no") {newHeatAvailableCode = 0}
+    else if (selectedState == "yes") {newHeatAvailableCode = 1}
+    else {
+         if (debugLogging) log.debug "invalid parameter selectedState: $selectedState"    // only "no" or "yes" allowed
+         return
+         }     
+    def cmds =
+			zigbee.writeAttribute(0x201, 0x4030, 0x10, newHeatAvailableCode, [mfgCode:0x1246], 0) +  // write new TRV Heat Available attribute
+			zigbee.readAttribute(0x0201, 0x4030, [mfgCode:0x1246])	//read TRV Heat Available Attribute
+    return cmds
+}
+
+def setOpenWindowFeature(settingValue) {
+    def int newOpenWindowFeatureSetting = 0
+    if (settingValue == "off") {newOpenWindowFeatureSetting = 0}   // 0 for off
+    else if (settingValue == "on") {newOpenWindowFeatureSetting = 1}   // 1 for on
+    def cmds =
+			zigbee.writeAttribute(0x201, 0x4051, 0x10, newOpenWindowFeatureSetting, [mfgCode:0x1246], 0) +  // write Open Window Feature on / off setting
+			zigbee.readAttribute(0x0201, 0x4051, [mfgCode:0x1246])	//read Open Window Feature on / off
+    return cmds
+}
+
+def setTRVLockState(selectedState){
+        def int newLockStateCode = 0
+        if (selectedState == "unlocked") {newLockStateCode = 0}
+        else if (selectedState == "locked") {newLockStateCode = 1}
+        else {
+            if (debugLogging) log.debug "invalid parameter selectedState: $selectedState"    // only "unlocked" or "locked" allowed
+            return
+            }    
+	    def cmds =
+			zigbee.writeAttribute(0x204, 0x0001, 0x30, newLockStateCode) +  // write new Lock State Code attribute
+			zigbee.readAttribute(0x0204, 0x0001)	//read TRV Lock State
+    	return cmds
+}
+
+def getBatteryVoltage(){    
+    // read attributes from the Power Cluster (0x0001)
+    def cmds = 
+    zigbee.readAttribute(0x0001, 0x0020, [:], delay=300)    // r - BatteryVoltage - uint8 - in decivolts
+    if (debugLogging) log.debug "cmds(): $cmds"
+	return cmds		    
+}
+
+def geteTRVIdTimeRemaining(){    
+    def cmds = 
+    zigbee.readAttribute(0x0003, 0x0000, [:], delay=300)         // r - IdentifyTime - uint16
+    if (debugLogging) log.debug "cmds(): $cmds"
+	return cmds		    
+}
+
+def configure() {
+	def cmds =
+/**     Configure reporting frequency for TRV attributes that report their own changes or regularly confirm their condition - 
+        Attribute ID, Data Type, Payload (Min report, Max report, On change trigger)
+        Attribute ID
+        Data Types: - see table 2.10 in Zigbee Spec  - U8BIT, 0x20; S16BIT, 0x29; 8 bits enum, 0x30; boolean, 0x10; 8bit map, 0x18
+        Payload (Min reporting period in seconds - TRV will not report this attribute more frequently than this, 
+                 Max reporting period in seconds - TRV will report at least this often even if not change in value, 
+                 On change trigger - subject to Min and Max, TRV will report if attribute value (i.e. zigbee coded data value for that attribute) changes by this amount)
+**/
+        //  0x0001 = Power Cluster
+		zigbee.configureReporting(0x0001, 0x0021, 0x20, 300, 43200, 4) +	    //Attribute ID 0x0021 = battery percentage, Data Type: U8BIT
+
+        //  0x0003 = Identify Cluster
+        zigbee.configureReporting(0x0003, 0x4000, 0x10, 2, 0, 1) +     // r - Identification Button  - Boolean normally false, but true on eTRV button press returning to false 3 seconds after button released
+
+        //  0x0201 = Thermostat Cluster 
+        zigbee.configureReporting(0x0201, 0x0000, 0x29, 300, 3600, 10) + 	 //Attribute ID 0x0000 = local temperature, Data Type: S16BIT
+        zigbee.configureReporting(0x0201, 0x0008, 0x20, 300, 43200, 1) +     //Attribute ID 0x0008 = pi heating demand, Data Type: U8BIT
+        zigbee.configureReporting(0x0201, 0x0012, 0x29, 1, 3600, 10) +  	 //Attribute ID 0x0012 = occupied heat setpoint, Data Type: S16BIT  
+
+        zigbee.configureReporting(0x0201, 0x0030, 0x30, 1, 0, 0)    +  	     //Attribute ID 0x0030 = TRV Setpoint Change Source
+        zigbee.configureReporting(0x0201, 0x4000, 0x30, 60, 43200, 1) +  	 //Attribute ID 0x4000 = TRV Open Window Detection
+        zigbee.configureReporting(0x0201, 0x4012, 0x10, 1, 0, 1) +  	     //Attribute ID 0x4012 = TRV Mounting Mode Active, Data Type: Boolean
+        zigbee.configureReporting(0x0201, 0x4031, 0x10, 60, 43200, 1) +       //Attribute ID 0x4031 = TRV Call for heat, Data Type: Boolean - [mfgCode:0x1246]
+        zigbee.configureReporting(0x0201, 0x404A, 0x29, 300, 3600, 50) +    //Attribute ID 0x404A = Load estimate on this radiator
+        zigbee.configureReporting(0x0201, 0x404D, 0x18, 60, 43200, 1) +      //Attribute ID 0x404D = eTRV Adaption Run Status
+        //  zigbee.configureReporting(0x0201, 0x404F, 0x10, 60, 0, 1) +          //Attribute ID 0x404F   = Preheat Status     
+        //  zigbee.configureReporting(0x0201, 0x4050, 0x23, 60, 0, 1) +          //Attribute ID 0x4050   = Preheat Time
+        zigbee.configureReporting(0x0B05, 0x4000, 0x19, 60, 43200, 0)        // Error Codes - 0x19
+        
+	if (debugLogging) log.debug "configure() --- cmds: $cmds"
+    state.driverConfiguredDateTime = new Date().format("dd/MMM/yyyy HH:mm:ss")
+	return cmds
+}
+
+def refresh() {
+	def cmds =
+        //On refresh(), read these TRV attributes                   // all the selected attributes must be interpreted in the parse() method
+
+        //  0x0001 = Power Cluster Attributes
+        zigbee.readAttribute(0x0001, 0x0020) +                      //Read Battery percentage
+        zigbee.readAttribute(0x0001, 0x0021) +                      //Read Battery percentage
+
+        //  0x0003 = Identify Cluster Attributes
+        zigbee.readAttribute(0x0003, 0x0000) +                      // Identification State Time Remaining (second)
+        zigbee.readAttribute(0x0003, 0x4000, [mfgCode:0x1246]) +    // eTRV button state
+        
+        //  0x0201 = Thermostat Cluster Attributes
+        zigbee.readAttribute(0x201, 0x0000) +	                    //Read LocalTemperature
+        //  zigbee.readAttribute(0x201, 0x0003) +	                    //Read AbsMinHeatSetpointLimit - no point factory set at 5 degrees - R -  
+        //	zigbee.readAttribute(0x201, 0x0004) +	                    //Read AbsMaxHeatSetpointLimit - no point factory set at 35 degrees - R -  
+        zigbee.readAttribute(0x201, 0x0008) +	                    //Read PIHeatingDemand
+		zigbee.readAttribute(0x201, 0x0012) + 	                    //Read OccupiedHeatingSetpoint
+		zigbee.readAttribute(0x201, 0x0015) + 	                    //Read Minimum Heat Setpoint Limit  / eTRVMinHeatSetpointLimit must be between 5 and 35 and lower than eTRVMaxHeatSetpointLimit
+   		zigbee.readAttribute(0x201, 0x0016) + 	                    //Read Maximum Heat Setpoint Limit  / eTRVMaxHeatSetpointLimit must be between 5 and 35 and higher than eTRVMinHeatSetpointLimit
+        //  zigbee.readAttribute(0x201, 0x001B) +	                    //Read ControlSequenceOfOperation - R - 
+        //  zigbee.readAttribute(0x201, 0x001C) +	                    //Read System Mode - fixed as Heat - RW -
+        //  zigbee.readAttribute(0x201, 0x0020) +	                    //Read StartOfWeek - R -  
+        //  zigbee.readAttribute(0x201, 0x0021) +	                    //Read NumberOfWeeklyTransitions - R -  
+        //  zigbee.readAttribute(0x201, 0x0022) +	                    //Read NumberOfDailyTransitions - R -  
+        //  zigbee.readAttribute(0x201, 0x0025) +	                    //Read Programming Mode Operation - RW -  
+        zigbee.readAttribute(0x201, 0x0030) +                       // Read Setpoint Source 00 for user; 01 for internal schedule; 02 for Attribute Write or Setpoint Command
+
+        //  Manufacturer Specific Thermostat Cluster Attributes
+        zigbee.readAttribute(0x0201, 0x4000, [mfgCode:0x1246]) +	//Read TRV Open Window Detection State
+        zigbee.readAttribute(0x0201, 0x4003, [mfgCode:0x1246]) +    //Read TRV Open Window External Window Sensor
+        zigbee.readAttribute(0x0201, 0x4010, [mfgCode:0x1246]) +    //Read TRV Exercise Day 00 for Sunday to 06 for Saturday, 07 for undefined
+        zigbee.readAttribute(0x0201, 0x4011, [mfgCode:0x1246]) +    //Read TRV Exercise Time / Minutes from midnight     
+        zigbee.readAttribute(0x0201, 0x4012, [mfgCode:0x1246]) +    //Read TRV Mounting Mode Active: 00 for mounted and 01 for not mounted or factory reset 
+        zigbee.readAttribute(0x0201, 0x4013, [mfgCode:0x1246]) +    //Read TRV Mounting Mode Control: 00 for Ready for physical mounting on valve, 01 for mounted for as if mounted        
+        zigbee.readAttribute(0x0201, 0x4014, [mfgCode:0x1246]) +	//Read TRV Orientation - false / 0  = Horizontal; true / 1 = vertical -  Danfos- [mfgCode:0x1246]
+        zigbee.readAttribute(0x0201, 0x4015, [mfgCode:0x1246]) +	//Read TRV Attribute for External Measured Room Sensor
+        zigbee.readAttribute(0x0201, 0x4016, [mfgCode:0x1246]) +	//Read Radiator Covered Attribute - false / 0  = not covered; true / 1 = covered -  Danfos- [mfgCode:0x1246]
+        zigbee.readAttribute(0x0201, 0x4020, [mfgCode:0x1246]) +	//Read TRV Control Algorithm Aggression Factor 1 fast to 10 slow. If Bit 4 = 1 quick open feature is disabled        
+        zigbee.readAttribute(0x0201, 0x4030, [mfgCode:0x1246]) +	//Read TRV Heat Available, 0 for no and 1 for yes
+        zigbee.readAttribute(0x0201, 0x4031, [mfgCode:0x1246]) +	//Read TRV Calling for heat - false / 0  ; true / 1 Danfos- [mfgCode:0x1246]
+        zigbee.readAttribute(0x0201, 0x4032, [mfgCode:0x1246]) +	//Read TRV Load Balancing Enabled:  00 disabled (radiator acts alone); 01 default on         
+        zigbee.readAttribute(0x0201, 0x4040, [mfgCode:0x1246]) +	//Read TRV Load Radiator Radiator Mean:         
+        zigbee.readAttribute(0x0201, 0x404A, [mfgCode:0x1246]) +	//Read TRV Load Estimate for this radiator:
+        zigbee.readAttribute(0x0201, 0x404B, [mfgCode:0x1246]) +	//Read TRV Regulation Off-set -in steps of 0.1°C: range –2.5 °C to +2.5 °C (0xE7 … 0x19). 
+        zigbee.readAttribute(0x0201, 0x404C, [mfgCode:0x1246]) +	//Read TRV Adaptation Run Control: default 00, 01 for initiate; 02 for cancel
+        zigbee.readAttribute(0x0201, 0x404D, [mfgCode:0x1246]) +	//Read TRV Adaptation Run Status: bit 0 in progress, bit 1 Valve Characteristic found, bit 2 Valve Characteristic lost
+        zigbee.readAttribute(0x0201, 0x404E, [mfgCode:0x1246]) +	//Read TRV Adaptation Run Settings: 00 default; 01 for enabled automatic     
+        zigbee.readAttribute(0x0201, 0x404F, [mfgCode:0x1246]) +	//Read TRV Preheat Status: 00 for off, 01 for on (default) - reportable
+        zigbee.readAttribute(0x0201, 0x4050, [mfgCode:0x1246]) +	//Read TRV Preheat Time: Time Stamp, default 00000000, max FFFFFFFF - reportable
+        zigbee.readAttribute(0x0201, 0x4051, [mfgCode:0x1246]) +	//Read TRV Open Window Feature off/ on
+
+        // 0x0204 = Thermostat Display Attributes
+	    zigbee.readAttribute(0x0204, 0x0001) +				        //Read KeypadLockout -  Child Lock State, 00 Unlocked to 05 Fully Locked
+        zigbee.readAttribute(0x0204, 0x4000, [mfgCode:0x1246]) + 	    //Read TRV Display Viewing Direction - false / 0  = Normal; true / 1 = Inverted  - Danfos- [mfgCode:0x1246]        
+/**
+		Other Possible Attributes - check the Danfos Specification
+
+        Power Configuration Cluster (0x0001) 
+        zigbee.readAttribute(0x0001, 0x0020) +	//Read BatteryVoltage - R -
+		
+        Identify Cluster (0x0003) 
+        zigbee.readAttribute(0x0003, 0x0000) +	//Read Identify Time - R -   
+        zigbee.readAttribute(0x0003, 0x4000) +	//Read Identification button - R -  
+    
+        Time Cluster (0x000A) 
+		zigbee.readAttribute(0x000A, 0x0000) +	//Read Time - RW - 
+		zigbee.readAttribute(0x000A, 0x0001) +	//Read TimeStatus - RW - 
+		zigbee.readAttribute(0x000A, 0x0002) +	//Read TimeZone - RW - 
+		zigbee.readAttribute(0x000A, 0x0003) +	//Read DstStart - RW - 
+		zigbee.readAttribute(0x000A, 0x0004) +	//Read DstEnd - RW - 
+		zigbee.readAttribute(0x000A, 0x0005) +	//Read DstShift - RW - 
+		zigbee.readAttribute(0x000A, 0x0007) +	//Read LocalTime - R -  
+		zigbee.readAttribute(0x000A, 0x0008) +	//Read LastSetTime - R -  
+
+        Thermostat UI Configurations Cluster (0x0204)
+		zigbee.readAttribute(0x0204, 0x0000) +	//Read temperatureDisplayMode - fixed as oC - 0x00
+
+        Diagnostic Cluster (0x0B05) 
+**/
+        zigbee.readAttribute(0x0B05, 0x4000, [mfgCode:0x1246])	//Read eTRVErrorFlags  
+
+	if (debugLogging) log.debug "refresh() --- cmds: $cmds"
+    state.driverRefreshedDateTime = new Date().format("dd/MMM/yyyy HH:mm:ss")
+	return delayBetween(cmds,200)
+}
+    
+def readBaiscClusterAttributes(){    
+    // read attributes from the Basic Cluster (0x0000) and put them is device.data
+    def cmds =
+	zigbee.readAttribute(0x0000, 0x0000) +	//Read ZCLVersion - R - unint8
+	zigbee.readAttribute(0x0000, 0x0001) +	//Read ApplicationVersion - R - unint8
+	zigbee.readAttribute(0x0000, 0x0002) +	//Read StackVersion - R - unint8
+	zigbee.readAttribute(0x0000, 0x0003, [:], delay=300) +	//Read HWVersion - R - unint8
+    zigbee.readAttribute(0x0000, 0x0004, [:], delay=400) +	//Read ManufacturerName - R - string
+	zigbee.readAttribute(0x0000, 0x0005, [:], delay=300) +  //Read ModelIdentifier - R - string
+	zigbee.readAttribute(0x0000, 0x0006, [:], delay=300) +	//Read DateCode - R - string
+	zigbee.readAttribute(0x0000, 0x0007, [:], delay=200) +	//Read PowerSource - R - enum8
+	zigbee.readAttribute(0x0000, 0x0010, [:], delay=400) +	//Read LocationDescription - R - string (0 - 16)
+	zigbee.readAttribute(0x0000, 0x4000, [:], delay=200)    //Read SoftwareBuildID - R - string(16)  // , [mfgCode:0x1246]
+    if (debugLogging) log.debug "cmds(): $cmds"
+	return cmds		    
+}
+ 
+def readTimeClusterAttributes(){    
+    // read some attributes from the Time Cluster (0x000A) and put them is device.data
+    def cmds = 
+    zigbee.readAttribute(0x000A, 0x0000) +    // rw - UTC - Time
+    zigbee.readAttribute(0x000A, 0x0001) +    // rw - map8 - TimeStatus
+    zigbee.readAttribute(0x000A, 0x0002) +    // rw - int32 - TimeZone
+    zigbee.readAttribute(0x000A, 0x0003) +    // rw - uint32 - DstStart
+    zigbee.readAttribute(0x000A, 0x0004) +    // rw - uint32 - DstEnd
+    zigbee.readAttribute(0x000A, 0x0005) +    // r - int32 - DstShift
+    zigbee.readAttribute(0x000A, 0x0007) +    // r - uint32 - LocalTime
+    zigbee.readAttribute(0x000A, 0x0008)      //r - UTC - LocalSetTime
+    if (debugLogging) log.debug "cmds(): $cmds"
+	return cmds		    
+}       
+
+def readOTAClusterAttributes(){    
+    // read some attributes from the OTA Cluster (0x0019) and put them is device.data
+    def cmds = 
+    zigbee.readAttribute(0x0019, 0x0002, [:], delay=200) +
+    zigbee.readAttribute(0x0019, 0x0003, [:], delay=300) +    
+    zigbee.readAttribute(0x0019, 0x0007, [:], delay=400)        
+    if (debugLogging) log.debug "cmds(): $cmds"
+	return cmds		    
+}     
+
+def readPollingControlClusterAttributes(){    
+    // read some attributes from the Poll Control Cluster (0x0020) and put them is device.data
+    def cmds = 
+    zigbee.readAttribute(0x0020, 0x0000, [:], delay=200) +   // rw - uint32 - CheckinInterval
+    zigbee.readAttribute(0x0020, 0x0001, [:], delay=300) +    // r - uint32 - LongPollInterval
+    zigbee.readAttribute(0x0020, 0x0002, [:], delay=200) +    // r - uint16 - ShortPollInterval
+    zigbee.readAttribute(0x0020, 0x0003, [:], delay=300) +    // rw - uint16 - FastPollTimeout
+    zigbee.readAttribute(0x0020, 0x0004, [:], delay=200) +    // r - uint32 - CheckInIntervalMin
+    zigbee.readAttribute(0x0020, 0x0005, [:], delay=300) +    // r - uint32 - LongPollIntervalMin
+    zigbee.readAttribute(0x0020, 0x0006, [:], delay=200)      // r - uint32 - FastPollTimeoutMax
+    if (debugLogging) log.debug "cmds(): $cmds"
+	return cmds		    
+}     
+
+/**  Other possible Zigbee Commands for this device
+GeneralCommand Frames
+    0x08 Read Reporting Configuration
+    0x0A Report Attributes
+    0x0C Discover Attributes
+
+Identify Cluster
+    0x0003 0x00 Identify
+    0x0003 0x01 Identify Query 
+    0x0003 0x00 Identify Time Query Response
+
+OTA Cluster 
+    Not listed - commands 00 - 19
+
+Poll Control Cluster
+    0x0020 0x00 Check in
+    0x0020 0x00 Check in Response
+    0x0020 0x01 Fast Poll Stop
+
+Thermostat Cluster
+    0x0201 0x01 SetWeeklySchedule
+    0x0201 0x02 GetWeeklySchedule
+    0x0201 0x03 ClearWeeklySchedule
+    0x0201 0x42 PreHeatCommand
+
+**/
+
+private static String hexToAscii(String hexStr) {
+    StringBuilder output = new StringBuilder("")
+    if (hexStr.length() > 2){
+        for (int i = 2; i < (hexStr.length()); i += 2) { 
+        String str = hexStr.substring(i, i + 2);
+        output.append((char) Integer.parseInt(str, 16));
+        } 
+    }
+    return output.toString();
+}
