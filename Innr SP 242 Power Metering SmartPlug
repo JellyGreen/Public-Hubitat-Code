@@ -42,7 +42,7 @@ import hubitat.zigbee.zcl.DataType
 import java.math.RoundingMode
 
 metadata {
-    definition(name: 'Innr SP 242 Power Metering SmartPlug', version: '1.2.5', namespace: 'jellygreen', author: 'Jonathan Bradshaw - edited by jellygreen', singleThreaded: true) {
+    definition(name: 'Innr SP 242 Power Metering SmartPlug', version: '1.2.6', namespace: 'jellygreen', author: 'Jonathan Bradshaw - edited by jellygreen', singleThreaded: true) {
         
         capability 'Actuator'
         capability 'Configuration'
@@ -68,7 +68,8 @@ metadata {
         // command "timedOnOffRefresh"  // refresh some 0x0006 cluster 4000 attributes 
         command "setHeathCheckInterval", [[name:"Set healthCheckInterval", type: "NUMBER", description: "Enter time in minutes, max 59"]]
         command "debugFor30Min", [[name:"Debug Log On for 30 Min", description: "Turn on debug logging for 30 min" ] ] //
-   
+        command "ReadReportingConfigs"
+        
         attribute "onTime4001", "number"                    //0x0006, 0x4001 r u16
         attribute "offWait4002", "number"                   //0x0006, 0x4002 r u16
         attribute "performOnWithTimedOff", "string"
@@ -122,7 +123,7 @@ innr manufacturer code is 0x1166  add in readattribute command as [mfgCode:0x116
     }
 }
 
-@Field static final String VERSION = '1.2.5 (2024-02-26)'
+@Field static final String VERSION = '1.2.6 (2024-02-27)'
 
 void installed() {    //Invoked by Hubitat when driver is installed
     onePressSetup()
@@ -134,6 +135,7 @@ void installed() {    //Invoked by Hubitat when driver is installed
 def onePressSetup(){
     debugFor30Min()
     initialize()
+    updated()
     runIn(1, 'configure')
     runIn(5, 'refresh') 
     runIn(7, 'timedOnOffRefresh') 
@@ -145,6 +147,8 @@ def initialize(){
     // settings.clear()
     setHeathCheckInterval(45)
     cmds = setPowerRestoreMode("Last State")
+    device.updateSetting('energyResolution', [value: 2, type: 'number' ])
+    device.updateSetting('energyReportingPeriod', [value: 3600, type: 'number' ])
     sendEvent(name: "performOnWithTimedOff",  unit: null, value: "always", type: STRING, descriptionText: "performOnWithTimedOff") // set default value
     state.driverInitializedDateTime = new Date().format("dd/MMM/yyyy HH:mm:ss")
     if (infoLogging) log.info "JellyGreen's driver for ${device.displayName} initialized"
@@ -153,19 +157,19 @@ def initialize(){
 
 def configure() {             // configure attribute reporting min period, max period and delta
     def int reportingPeriod = settings.periodicReportingPeriod
-    def int energyReportingPeriod = settings.energyReportingPeriod
+    def int energyReportingPeriod = settings.energyReportingPeriod ?: 3600
     if (settings.periodicReportingOnOff == false) reportingPeriod = 0
     if (settings.energyReportingPeriodOnOff == false) energyReportingPeriod = 0    
     def int powerDelta = settings.powerDelta            // try 1 which should give a min delta of 1W
     def int voltageDelta = settings.voltageDelta * 10   // try no factor which should give delta of 1V    
     def int amperageDelta = settings.amperageDelta      // no multiplier needed, as value is milliamps, mA
     def int energyDelta = 1                             // ? is there is energy reporting on this device 1 is 0.01kWh
-    if (settings.energyResolution == null) {settings.energyResolution = 2}
+    if (settings.energyResolution == null) {device.updateSetting('energyResolution', [value: 2, type: 'number' ])}
     if (settings.energyResolution == 2) {energyDelta = 1}
     if (settings.energyResolution == 1) {energyDelta = 10}
     if (settings.energyResolution == 0) {energyDelta = 100}
     List<String> cmds = []
-    cmds += zigbee.configureReporting(zigbee.ON_OFF_CLUSTER, POWER_ON_OFF_ID, DataType.BOOLEAN, 0, reportingPeriod, null, [:], DELAY_MS)    // switch state
+    cmds += zigbee.configureReporting(zigbee.ON_OFF_CLUSTER, POWER_ON_OFF_ID, DataType.BOOLEAN, 0, reportingPeriod, null, [:], DELAY_MS)    // switch state was null 
     cmds += zigbee.configureReporting(zigbee.ELECTRICAL_MEASUREMENT_CLUSTER, ACTIVE_POWER_ID, DataType.INT16, 0, reportingPeriod, powerDelta, [:], DELAY_MS)    //power reporting - min change in W was 10
     cmds += zigbee.configureReporting(zigbee.ELECTRICAL_MEASUREMENT_CLUSTER, RMS_VOLTAGE_ID, DataType.UINT16, 0, reportingPeriod, voltageDelta, [:], DELAY_MS)    //voltage reporting - min change in volts was 10
     cmds += zigbee.configureReporting(zigbee.ELECTRICAL_MEASUREMENT_CLUSTER, RMS_CURRENT_ID, DataType.UINT16, 0, reportingPeriod, amperageDelta, [:], DELAY_MS)    //current reporting  - min change in mA was 100
@@ -309,7 +313,7 @@ def on() {                                //     On Command
     if (settings.disableOnOff) { return [] }
     if (infoLogging) log.info "${device.displayName} turn on command"
     scheduleCommandTimeoutCheck()
-    // runIn(3, 'refresh')
+    // runIn(1, 'refresh')
     return zigbee.on()
 }
 
@@ -317,7 +321,7 @@ def off() {                                //    Off Command
     if (settings.disableOnOff) { return [] }
     if (infoLogging) log.info  "${device.displayName} turn off command" 
     scheduleCommandTimeoutCheck()
-    // runIn(3, 'refresh')
+    // runIn(1, 'refresh')
     return zigbee.off()
 }
 
@@ -325,7 +329,7 @@ def toggle() {                             // Toggle Command (On/Off)
     if (settings.disableOnOff) { return [] }
     if (infoLogging) log.info "${device.displayName} toggle command"
     scheduleCommandTimeoutCheck()
-    // runIn(2, 'refresh')
+    // runIn(1, 'refresh')
     return zigbee.command(zigbee.ON_OFF_CLUSTER, 0x02, [:], 0)
 }
 
@@ -397,23 +401,14 @@ def parse(description) {                   // Parse Incoming Zigbee Message
     def Map descMap = zigbee.parseDescriptionAsMap(description)
     if (debugLogging) log.debug "message as a map is: $descMap"
     
-    // acknowledge healthstatus is on-line
     if ((device.currentValue('healthStatus') != 'online') && (device.healthCheckInterval != 0))  {sendEvent(name: "healthStatus",  unit: null, value: "online", type: null, descriptionText: "healthStatus attribute gone online")}
     
-    // unschedule the device command response timeout 
-    unschedule('deviceCommandTimeout')
- 
-    // ignore cluster specific messages and parse everything else
-    if (descMap.isClusterSpecific != true) {
+    unschedule('deviceCommandTimeout')      // unschedule the device command response timeout 
+
+    if ((descMap.isClusterSpecific != true) && (descMap.profileId != "0x0000")){      // ignore cluster specific messages and profile Id = 0000 parse everything else
         parseGeneralCommandResponse(descMap)
         }
-    /**
-        if (descMap.profileId == '0000') {
-        // parseZdoClusters(descMap)
-        if (debugLogging) log.debug "profileID == 0000; ZDO Cluster information received and ignored" // generally appears to be a message identifier counter
-        return
-    }
-    **/
+    else if (debugLogging) log.debug "isClusterSpecific is true or profileID == 0000; ZDO Cluster information received and ignored" // generally appears to be a message identifier counter
     return
 }
     
@@ -433,7 +428,14 @@ def parseGeneralCommandResponse(descMap) {
             final String data = descMap.data in List ? ((List)descMap.data).first() : descMap.data
             final int statusCode = hexStrToUnsignedInt(data)
             final String statusName = ZigbeeStatusEnum[statusCode] ?: "0x${data}"
+            
+            if ((clusterInt == 0x006) && (statusName == "Success")) {
+                log.debug "Refresh on Success" 
+                refresh()
+            }
             if (debugLogging) log.debug "${device} zigbee response write ${clusterLookup(descMap.clusterInt)} attribute response: ${statusName}"
+            
+        
             else if (statusCode > 0x00) log.warn "${device} zigbee response write ${clusterLookup(descMap.clusterInt)} attribute error: ${statusName}"
             break
         case 0x07: // configure reporting response
@@ -495,8 +497,24 @@ def parseGeneralCommandResponse(descMap) {
             final String status = ZigbeeStatusEnum[statusCode] ?: "0x${data[1]}"
             if (statusCode > 0x00) {
                 log.warn "${device} zigbee ${clusterLookup(descMap.clusterInt)} command 0x${commandIdString} error: ${status}"
-            } else if (debugLogging) {
+                } 
+            else if (debugLogging) {
                 log.debug "${device} zigbee ${clusterLookup(descMap.clusterInt)} command 0x${commandIdString} response: ${status}"
+            /**    
+                if ((clusterLookup(descMap.clusterInt) =="ON_OFF_CLUSTER") && (commandIdString == "00") && (status == "Success")) {
+                    sendEvent(name: "switch", unit: "", value: "off", type: null, descriptionText: 'switch attribute updated for successful 0x0006 00 off command')
+                    //runIn(2, 'refreshMeters')
+                    }
+                else if ((clusterLookup(descMap.clusterInt) =="ON_OFF_CLUSTER") && (commandIdString == "01") && (status == "Success")) {
+                    sendEvent(name: "switch", unit: "", value: "on", type: null, descriptionText: 'switch attribute updated for successful 0x0006 01 on command')
+                    //runIn(2, 'refreshMeters')
+                    }
+                else if ((clusterLookup(descMap.clusterInt) =="ON_OFF_CLUSTER") && (commandIdString == "02") && (status == "Success")) {
+                   // if (device.currentValue("switch") == "on")  sendEvent(name: "switch", unit: "", value: "off", type: null, descriptionText: 'switch attribute updated for successful 0x0006 02 toggle to off command')
+                   // else sendEvent(name: "switch", unit: "", value: "on", type: null, descriptionText: 'switch attribute updated for successful 0x0006 02 toggle to on command')
+                    // runIn(2, 'refreshMeters')
+                    }
+            **/
             }
             break
         default:
