@@ -42,7 +42,7 @@ import hubitat.zigbee.zcl.DataType
 import java.math.RoundingMode
 
 metadata {
-    definition(name: 'Innr SP 242 Power Metering SmartPlug', version: '1.2.6', namespace: 'jellygreen', author: 'Jonathan Bradshaw - edited by jellygreen', singleThreaded: true) {
+    definition(name: 'Innr SP 242 Power Metering SmartPlug', version: '1.2.7', namespace: 'jellygreen', author: 'Jonathan Bradshaw - edited by jellygreen', singleThreaded: true) {
         
         capability 'Actuator'
         capability 'Configuration'
@@ -123,7 +123,7 @@ innr manufacturer code is 0x1166  add in readattribute command as [mfgCode:0x116
     }
 }
 
-@Field static final String VERSION = '1.2.6 (2024-02-27)'
+@Field static final String VERSION = '1.2.7 (2024-02-29)'
 
 void installed() {    //Invoked by Hubitat when driver is installed
     onePressSetup()
@@ -314,45 +314,52 @@ def on() {                                //     On Command
     if (infoLogging) log.info "${device.displayName} turn on command"
     scheduleCommandTimeoutCheck()
     // runIn(1, 'refresh')
-    return zigbee.on()
+    def cmds =                                        //   
+	zigbee.command(zigbee.ON_OFF_CLUSTER, 0x01, [:], DELAY_MS)+  //
+    zigbee.readAttribute(0x0006, 0x0000) 
+    return cmds
 }
 
 def off() {                                //    Off Command
     if (settings.disableOnOff) { return [] }
     if (infoLogging) log.info  "${device.displayName} turn off command" 
     scheduleCommandTimeoutCheck()
-    // runIn(1, 'refresh')
-    return zigbee.off()
+    def cmds =                                        //   
+	zigbee.command(zigbee.ON_OFF_CLUSTER, 0x00, [:], DELAY_MS) +  //
+    zigbee.readAttribute(0x0006, 0x0000) 
+    return cmds
 }
 
 def toggle() {                             // Toggle Command (On/Off)
     if (settings.disableOnOff) { return [] }
     if (infoLogging) log.info "${device.displayName} toggle command"
     scheduleCommandTimeoutCheck()
-    // runIn(1, 'refresh')
-    return zigbee.command(zigbee.ON_OFF_CLUSTER, 0x02, [:], 0)
+    def cmds =                                        //   
+	zigbee.command(zigbee.ON_OFF_CLUSTER, 0x02, [:], DELAY_MS)+  //
+    zigbee.readAttribute(0x0006, 0x0000) 
+    return cmds
 }
 
 def setOnTime(inputTime){
     if ((inputTime >= 0) && (inputTime <= 6553)){        // 0xfffe / multiply by 10 (for tenths of a second)
-    int onTime = (Math.round(inputTime)) * 10
-    def cmds =                                        //   
-	zigbee.writeAttribute(0x0006, 0x4001, 0x21, onTime) //+  //
-    //zigbee.readAttribute(0x0006, 0x4001) 
-    return cmds    
-    }
+        int onTime = (Math.round(inputTime)) * 10
+        def cmds =                                        //   
+	    zigbee.writeAttribute(0x0006, 0x4001, 0x21, onTime) +  //
+        zigbee.readAttribute(0x0006, 0x4001) 
+        return delayBetween(cmds, 500)   
+        }
     else {
-    if (debugLogging) log.debug "Set On Time, inputTime is out of range"
-    }
+        if (debugLogging) log.debug "Set On Time, inputTime is out of range"
+        }
 }
 
 def setOffWait(inputTime){
     if ((inputTime >= 0) && (inputTime <= 6553)){        // 0xfffe / multiply by 10 (for tenths of a second)
     int offWait = (Math.round(inputTime)) * 10
     def cmds =                                        //   
-	zigbee.writeAttribute(0x0006, 0x4002, 0x21, offWait) //+
-    //zigbee.readAttribute(0x0006, 0x4002) //
-    return cmds    
+	zigbee.writeAttribute(0x0006, 0x4002, 0x21, offWait) +
+    zigbee.readAttribute(0x0006, 0x4002) //
+    return delayBetween(cmds, 500)  
     }
     else {
     if (debugLogging) log.debug "Set Off Wait Time, inputTime is out of range"
@@ -393,7 +400,7 @@ def onWithTimedOff() {                                            // int OnTimeF
     def cmds =
             zigbee.command(0x0006, 0x42, [:], 0, payload) // +  //write using cluster command - 2000 is a 2second delay  [mfgCode:0x1166] not needed set 2000 to zero
             if (debugLogging) log.debug " tried to set an on period with a timed off period - my command is: $cmds"
-		return cmds
+		return delayBetween(cmds, 500)
 }   
     
 def parse(description) {                   // Parse Incoming Zigbee Message
