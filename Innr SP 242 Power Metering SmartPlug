@@ -398,7 +398,8 @@ def onWithTimedOff() {                                            // int OnTimeF
             // if (debugLogging) log.debug "payload: $payload"
     
     def cmds =
-            zigbee.command(0x0006, 0x42, [:], 0, payload) // +  //write using cluster command - 2000 is a 2second delay  [mfgCode:0x1166] not needed set 2000 to zero
+            zigbee.command(0x0006, 0x42, [:], 0, payload) +  //write using cluster command - 2000 is a 2second delay  [mfgCode:0x1166] not needed set 2000 to zero
+            zigbee.readAttribute(0x0006, 0x0000) 
             if (debugLogging) log.debug " tried to set an on period with a timed off period - my command is: $cmds"
 		return delayBetween(cmds, 500)
 }   
