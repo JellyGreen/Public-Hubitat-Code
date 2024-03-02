@@ -42,7 +42,7 @@ import hubitat.zigbee.zcl.DataType
 import java.math.RoundingMode
 
 metadata {
-    definition(name: 'Innr SP 242 Power Metering SmartPlug', version: '1.2.7', namespace: 'jellygreen', author: 'Jonathan Bradshaw - edited by jellygreen', singleThreaded: true) {
+    definition(name: 'Innr SP 242 Power Metering SmartPlug', version: '1.2.8', namespace: 'jellygreen', author: 'Jonathan Bradshaw - edited by jellygreen', singleThreaded: true) {
         
         capability 'Actuator'
         capability 'Configuration'
@@ -123,7 +123,7 @@ innr manufacturer code is 0x1166  add in readattribute command as [mfgCode:0x116
     }
 }
 
-@Field static final String VERSION = '1.2.7 (2024-02-29)'
+@Field static final String VERSION = '1.2.8 (2024-03-02)'
 
 void installed() {    //Invoked by Hubitat when driver is installed
     onePressSetup()
@@ -276,10 +276,9 @@ def updated() {         // Invoked by Hubitat when the driver configuration is u
 void debugFor30Min(){
     device.updateSetting('debugLogging', [value: 'true', type: 'bool']) 
     unschedule(debuglogsOff)
-    if (debugLogging) {
-        log.debug "debug logging turned on for 30 minutes"
-        runIn(1800, 'debuglogsOff')
-    }
+    log.debug "debug logging turned on for 30 minutes"
+    runIn(1800, 'debuglogsOff')
+
 }
 
 void debuglogsOff() {    //  Disable logging (for debugging)
